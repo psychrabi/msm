@@ -11,7 +11,7 @@
   "dependencies": {
     "@novnc/novnc": "^1.7.0",
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-websocket": "^2.1.0",
+    "@tauri-apps/plugin-websocket": "~2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

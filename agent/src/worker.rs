@@ -2,16 +2,22 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{server::ServerEvent, VncServer};
+use rustvncserver::{VncServer, server::ServerEvent};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
 #[derive(Debug, Parser)]
-#[command(name = "msm-agent-worker", about = "MSM per-session Windows desktop worker")]
+#[command(
+    name = "msm-agent-worker",
+    about = "MSM per-session Windows desktop worker"
+)]
 struct Args {
-    #[arg(long)] session_id: u32,
-    #[arg(long)] port: u16,
-    #[arg(long)] password: String,
+    #[arg(long)]
+    session_id: u32,
+    #[arg(long)]
+    port: u16,
+    #[arg(long)]
+    password: String,
 }
 
 #[tokio::main]
@@ -41,7 +47,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let server = std::sync::Arc::new(server);
 
-    info!(session_id=args.session_id, port=args.port, width, height, "VNC worker starting");
+    info!(
+        session_id = args.session_id,
+        port = args.port,
+        width,
+        height,
+        "VNC worker starting"
+    );
 
     tokio::spawn(async move {
         let mut enigo = match Enigo::new(&Settings::default()) {
@@ -54,20 +66,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         while let Some(event) = events.recv().await {
             match event {
-                ServerEvent::PointerMove { x, y, button_mask, .. } => {
+                ServerEvent::PointerMove {
+                    x, y, button_mask, ..
+                } => {
                     let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
                     apply_buttons(&mut enigo, button_mask);
                 }
                 ServerEvent::KeyPress { key, down, .. } => {
                     if let Some(mapped) = map_keysym(key) {
-                        let direction = if down { Direction::Press } else { Direction::Release };
+                        let direction = if down {
+                            Direction::Press
+                        } else {
+                            Direction::Release
+                        };
                         let _ = enigo.key(mapped, direction);
                     } else {
                         warn!(key, "unmapped VNC key symbol");
                     }
                 }
                 ServerEvent::ClientConnected { client_id } => {
-                    info!(session_id=args.session_id, client_id, "VNC client connected");
+                    info!(
+                        session_id = args.session_id,
+                        client_id, "VNC client connected"
+                    );
                 }
                 ServerEvent::ClientDisconnected { .. } => {}
                 _ => {}
@@ -87,7 +108,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let monitors = match Monitor::all() {
             Ok(value) => value,
             Err(error) => {
-                error!(session_id, ?error, "unable to enumerate monitors in capture thread");
+                error!(
+                    session_id,
+                    ?error,
+                    "unable to enumerate monitors in capture thread"
+                );
                 return;
             }
         };
@@ -108,14 +133,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Capture dimensions should match the VNC framebuffer. If Windows
                     // changes display configuration, the worker currently skips the frame;
                     // dynamic framebuffer resize will be added with display-change handling.
-                    if image.width() == capture_width as u32 && image.height() == capture_height as u32 {
+                    if image.width() == capture_width as u32
+                        && image.height() == capture_height as u32
+                    {
                         if let Err(error) = runtime.block_on(
-                            capture_server.framebuffer().update_from_slice(image.as_raw()),
+                            capture_server
+                                .framebuffer()
+                                .update_from_slice(image.as_raw()),
                         ) {
                             warn!(session_id, ?error, "framebuffer update failed");
                         }
                     } else {
-                        warn!(session_id, width=image.width(), height=image.height(), "capture dimensions changed; frame skipped");
+                        warn!(
+                            session_id,
+                            width = image.width(),
+                            height = image.height(),
+                            "capture dimensions changed; frame skipped"
+                        );
                     }
                 }
                 Err(error) => warn!(session_id, ?error, "screen capture failed"),
