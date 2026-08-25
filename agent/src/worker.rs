@@ -42,7 +42,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!(session_id=args.session_id, port=args.port, width, height, "VNC worker starting");
 
-    let input_server = server.clone();
     tokio::spawn(async move {
         let mut enigo = match Enigo::new(&Settings::default()) {
             Ok(value) => value,
@@ -73,25 +72,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
         }
-
-        // rustvncserver 2.2.1 does not expose a public stop() method.
-        // Dropping the server is the shutdown mechanism.
-        drop(input_server);
     });
 
+    // rustvncserver 2.2.1 exposes asynchronous framebuffer updates through
+    // Framebuffer::update_from_slice(). Keep capture on the Tokio runtime so
+    // the framebuffer's async locking and dirty-region notification can run.
     let capture_server = server.clone();
-    std::thread::spawn(move || loop {
-        match monitor.capture_image() {
-            Ok(image) => {
-                let w = image.width().min(u16::MAX as u32) as u16;
-                let h = image.height().min(u16::MAX as u32) as u16;
-                let framebuffer = capture_server.framebuffer_mut();
-                framebuffer.set_data(image.as_raw());
-                framebuffer.update_rect(0, 0, w, h);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            match monitor.capture_image() {
+                Ok(image) => {
+                    if let Err(error) = capture_server
+                        .framebuffer()
+                        .update_from_slice(image.as_raw())
+                        .await
+                    {
+                        warn!(?error, "framebuffer update failed");
+                    }
+                }
+                Err(error) => warn!(?error, "screen capture failed"),
             }
-            Err(error) => warn!(?error, "screen capture failed"),
         }
-        std::thread::sleep(Duration::from_millis(100));
     });
 
     server.listen(args.port).await?;
