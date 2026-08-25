@@ -59,14 +59,34 @@ Each worker is isolated to one Windows session. It:
 
 - captures the target user's desktop with `xcap`;
 - exposes the framebuffer through `rustvncserver`;
-- translates RFB keyboard and mouse events through `enigo` inside that same user session; and
+- translates RFB keyboard and mouse events through `enigo` inside that same user session;
+- bridges text clipboard changes between Windows and the VNC server; and
 - listens on its session-specific VNC port.
 
-This architecture is intended to prevent one user's desktop from being captured or controlled by another user's worker.
+This architecture is intended to prevent one user's desktop, input, or clipboard from being captured or controlled by another user's worker.
 
 ## Viewer responsibilities
 
-The viewer owns operator interaction, device/session selection, noVNC rendering, connection state, persistent agent connections, credential retrieval, and diagnostics. It does not need to be installed on managed computers.
+The viewer owns operator interaction, device/session selection, noVNC rendering, connection state, persistent agent connections, credential retrieval, clipboard integration, and diagnostics. It does not need to be installed on managed computers.
+
+### Monitoring layout
+
+The monitoring page separates agent/session management from active remote viewers:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ MSM Viewer       Monitoring   Settings   About     Status   │
+├──────────────────┬──────────────────────────────────────────┤
+│ Sessions          │ Remote viewers                           │
+│                  │                                          │
+│ User A [Connect] │ ┌────────────┐ ┌────────────┐            │
+│ User B [Connect] │ │ User A VNC │ │ User B VNC │            │
+│ User C [Connect] │ │            │ │            │            │
+│                  │ └────────────┘ └────────────┘            │
+└──────────────────┴──────────────────────────────────────────┘
+```
+
+Agent connection does not automatically open VNC viewers. Each session must be explicitly connected. Existing viewers are independent, so changing the selected session does not replace or reconnect another viewer.
 
 ### Persistent agent connections
 
@@ -78,10 +98,21 @@ The viewer also supports:
 
 - **Forget** — removes the saved endpoint and native credential.
 - **401 handling** — removes the rejected saved credential and stops automatic retries until a new token is supplied.
-- **Automatic reconnect** — retries a disconnected agent while the saved connection remains enabled.
-- **Remote-session reconnect** — attempts to restore the VNC connection when the session worker is restarted.
+- **Automatic agent reconnect** — retries a disconnected agent while the saved connection remains enabled.
+- **Explicit remote-session connection** — a worker/VNC connection is only started when the operator selects a session.
 
 The token itself is never intended to be persisted in `localStorage`.
+
+### VNC clipboard integration
+
+The worker bridges the Windows interactive-session clipboard to the VNC server. When the VNC client sends clipboard text, the worker writes it to the Windows clipboard. When the Windows clipboard changes, the worker publishes the text through the VNC server.
+
+The viewer uses noVNC's clipboard API to:
+
+- copy remote clipboard text to the operator clipboard when the Tauri webview permits clipboard access; and
+- forward paste events to the remote VNC session when the viewer is in control mode.
+
+The implementation is text-only at this stage; file/image clipboard formats are not transferred.
 
 ## Local development transport
 
@@ -102,7 +133,7 @@ The development agent currently exposes the control port directly. This is suita
 
 ## VNC implementation
 
-MSM uses `rustvncserver` rather than implementing RFB itself. The viewer uses the upstream noVNC client. OS capture and input are kept outside the VNC protocol implementation.
+MSM uses `rustvncserver` rather than implementing RFB itself. The viewer uses the upstream noVNC client. OS capture, clipboard, and input remain outside the VNC protocol implementation except for the VNC event bridge in the worker.
 
 ## Security and credential model
 
@@ -112,15 +143,16 @@ The per-session VNC ports are internal implementation endpoints. They should not
 
 This remains a development-stage security model. Production deployment should add transport encryption, stronger credential provisioning/rotation, authorization policy, and appropriate network isolation.
 
-## Current limitations
+## Current limitations / next stages
 
 - Primary-monitor capture only.
 - Fixed 10 FPS capture loop for the initial implementation.
 - Basic VNC keysym mapping.
-- No clipboard or file transfer.
+- Text clipboard only; no file/image transfer.
 - Development bearer-token authentication only.
 - The worker/VNC port is an internal endpoint and should be firewalled from remote hosts.
 - No relay or TLS yet.
-- The current viewer persistence model is endpoint-oriented; a richer multi-agent management UI can be added without changing the agent/service architecture.
+- Remote-session reconnect after worker replacement needs explicit viewer-side retry policy.
+- Multi-agent management can be expanded from the current endpoint-oriented persistence model.
 
-These are deliberate next-stage hardening items rather than reasons to duplicate existing upstream protocol libraries.
+These are the next hardening stages rather than reasons to duplicate existing upstream protocol libraries.
