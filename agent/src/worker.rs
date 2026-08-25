@@ -127,9 +127,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(text) = get_windows_clipboard() {
                 let changed = last_text.as_ref() != Some(&text);
                 if changed {
-                    if let Err(error) = clipboard_runtime.block_on(
-                        clipboard_server.send_cut_text_to_all(text.clone()),
-                    ) {
+                    if let Err(error) = clipboard_runtime
+                        .block_on(clipboard_server.send_cut_text_to_all(text.clone()))
+                    {
                         warn!(
                             session_id = clipboard_session_id,
                             ?error,
