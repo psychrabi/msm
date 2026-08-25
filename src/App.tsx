@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
 import './styles.css';
@@ -112,7 +112,6 @@ function App() {
   const connectingRef = useRef(false);
   const manualDisconnectRef = useRef(false);
   const selectedSessionRef = useRef(selectedSession);
-  const remoteRef = useRef(remote);
   const sessionsRef = useRef(sessions);
 
   useEffect(() => {
@@ -128,21 +127,17 @@ function App() {
   }, [selectedSession]);
 
   useEffect(() => {
-    remoteRef.current = remote;
-  }, [remote]);
-
-  useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  const clearReconnectTimer = useCallback(() => {
+  function clearReconnectTimer() {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-  }, []);
+  }
 
-  const disconnectSocket = useCallback(async () => {
+  async function disconnectSocket() {
     const current = socketRef.current;
     socketRef.current = null;
     setSocket(null);
@@ -153,9 +148,9 @@ function App() {
         // The connection may already have been closed.
       }
     }
-  }, []);
+  }
 
-  const scheduleReconnect = useCallback(() => {
+  function scheduleReconnect() {
     if (!reconnectEnabled || manualDisconnectRef.current || !tokenRef.current) return;
     if (reconnectTimerRef.current) return;
 
@@ -164,15 +159,16 @@ function App() {
       reconnectTimerRef.current = null;
       void connectAgent(true);
     }, RECONNECT_DELAY_MS);
-  }, [reconnectEnabled]);
+  }
 
-  const refreshSessions = useCallback(async (connection: WebSocket) => {
+  async function refreshSessions(connection: WebSocket) {
     try {
       await connection.send(JSON.stringify({ type: 'listSessions' }));
     } catch {
+      await disconnectSocket();
       scheduleReconnect();
     }
-  }, [scheduleReconnect]);
+  }
 
   async function connectAgent(isReconnect = false): Promise<void> {
     if (connectingRef.current || socketRef.current) return;
@@ -267,10 +263,6 @@ function App() {
     }
   }
 
-  const connect = useCallback(() => {
-    void connectAgent(false);
-  }, []);
-
   useEffect(() => {
     if (!initialSavedConnection.current) return;
     void connectAgent(true);
@@ -281,16 +273,11 @@ function App() {
       const current = socketRef.current;
       if (!current || manualDisconnectRef.current) return;
 
-      void current
-        .send(JSON.stringify({ type: 'ping' }))
-        .catch(() => {
-          void disconnectSocket();
-          scheduleReconnect();
-        });
+      void refreshSessions(current);
     }, HEALTH_CHECK_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [disconnectSocket, scheduleReconnect]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -302,7 +289,7 @@ function App() {
       void socketRef.current?.disconnect();
       rfbRef.current?.disconnect();
     };
-  }, [clearReconnectTimer]);
+  }, []);
 
   async function disconnect() {
     manualDisconnectRef.current = true;
@@ -317,7 +304,6 @@ function App() {
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     setRemote(null);
-    remoteRef.current = null;
     setConnectingRemote(false);
 
     await disconnectSocket();
@@ -347,14 +333,12 @@ function App() {
 
     setError('');
     setConnectingRemote(true);
-    void current
-      .send(JSON.stringify({ type: 'startSession', sessionId }))
-      .catch(() => {
-        setConnectingRemote(false);
-        setError('The agent connection was lost. Reconnecting…');
-        void disconnectSocket();
-        scheduleReconnect();
-      });
+    void current.send(JSON.stringify({ type: 'startSession', sessionId })).catch(() => {
+      setConnectingRemote(false);
+      setError('The agent connection was lost. Reconnecting…');
+      void disconnectSocket();
+      scheduleReconnect();
+    });
   }
 
   useEffect(() => {
@@ -385,12 +369,9 @@ function App() {
       setRemote(null);
       setConnectingRemote(false);
 
-      if (manualDisconnectRef.current || !socketRef.current) {
-        return;
-      }
+      if (manualDisconnectRef.current || !socketRef.current) return;
 
       setError('Remote desktop disconnected. Reconnecting…');
-
       if (remoteReconnectTimerRef.current) {
         clearTimeout(remoteReconnectTimerRef.current);
       }
@@ -454,7 +435,7 @@ function App() {
           <button
             className="connect-button"
             type="button"
-            onClick={connect}
+            onClick={() => void connectAgent(false)}
             disabled={!endpoint || !token || status === 'Connecting…' || status === 'Reconnecting…'}
           >
             {status === 'Reconnecting…' ? 'Reconnecting…' : 'Connect'}
@@ -501,7 +482,6 @@ function App() {
                 onClick={() => {
                   setSelectedSession(session.sessionId);
                   setRemote(null);
-                  remoteRef.current = null;
                 }}
               >
                 <span className={`status-dot ${session.state === 'active' ? 'active' : 'locked'}`} />
