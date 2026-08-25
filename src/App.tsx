@@ -91,7 +91,6 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     const rfb = new RFB(container, controlEndpoint.toString(), { credentials: { password: remote.vncPassword } });
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
-    rfb.clipViewport = false;
     rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
