@@ -40,7 +40,12 @@ pub async fn ensure_session(
     let _operation = state.worker_operations.lock().await;
 
     if let Some(existing) = state.workers.lock().await.get(&session_id).cloned() {
-        if TcpStream::connect(("127.0.0.1", existing.port)).await.is_ok() {
+        // The process itself is authoritative. Checking the VNC socket alone can
+        // produce a false positive if another process happens to own the port.
+        let process_alive = is_process_alive(existing.worker_pid);
+        let port_ready = TcpStream::connect(("127.0.0.1", existing.port)).await.is_ok();
+
+        if process_alive && port_ready {
             return Ok(existing);
         }
 
@@ -48,9 +53,14 @@ pub async fn ensure_session(
             session_id,
             worker_pid = existing.worker_pid,
             port = existing.port,
-            "VNC worker stopped responding; restarting"
+            process_alive,
+            port_ready,
+            "VNC worker is unhealthy; restarting"
         );
-        terminate_worker(existing.worker_pid);
+
+        if process_alive {
+            terminate_worker(existing.worker_pid);
+        }
         state.workers.lock().await.remove(&session_id);
     }
 
@@ -67,6 +77,10 @@ pub async fn ensure_session(
 
     let deadline = tokio::time::Instant::now() + WORKER_READY_TIMEOUT;
     loop {
+        if !is_process_alive(worker_pid) {
+            return Err(format!("VNC worker for session {session_id} exited before becoming ready").into());
+        }
+
         if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
             let session = RemoteSession {
                 session_id: session_id.to_string(),
@@ -100,6 +114,9 @@ async fn reconcile(state: AppState) {
         .filter_map(|session| session.session_id.parse().ok())
         .collect();
 
+    // Reconcile every active session against the actual worker process. This is
+    // deliberately process-based rather than worker-report-based: if a worker is
+    // killed with Stop-Process or crashes, the master service can recreate it.
     for session_id in &active_ids {
         if let Err(error) = ensure_session(&state, *session_id).await {
             warn!(session_id, %error, "failed to ensure VNC worker");
@@ -126,4 +143,37 @@ async fn reconcile(state: AppState) {
     }
 
     sleep(SUPERVISOR_INTERVAL).await;
+}
+
+/// Checks the Windows process itself rather than relying on the VNC TCP port.
+/// This matches the proven watchdog behavior of the previous VNC service:
+/// a worker is considered healthy only while its PID is still running.
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        const STILL_ACTIVE: u32 = 259;
+
+        unsafe {
+            let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(handle) => handle,
+                Err(_) => return false,
+            };
+
+            let mut exit_code = 0u32;
+            let result = GetExitCodeProcess(handle, &mut exit_code).is_ok();
+            let _ = CloseHandle(handle);
+            result && exit_code == STILL_ACTIVE
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        true
+    }
 }
