@@ -251,14 +251,16 @@ function App() {
       setEndpoint(currentEndpoint);
       setToken(currentToken);
 
-      if (rememberConnection || reconnectEnabledRef.current) {
+      if (rememberConnection) {
         saveEndpoint(currentEndpoint);
         await setCredential(currentEndpoint, currentToken);
+        reconnectEnabledRef.current = true;
+      } else {
+        reconnectEnabledRef.current = false;
       }
 
       socketRef.current = connection;
       setSocket(connection);
-      reconnectEnabledRef.current = true;
       clearReconnectTimer();
 
       connection.addListener((message) => {
@@ -323,8 +325,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!initialEndpoint || !credentialsReady) return;
-    if (!token) return;
+    if (!initialEndpoint || !credentialsReady || !token) return;
     void connectAgent(true);
   }, [credentialsReady, token]);
 
