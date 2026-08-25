@@ -1,3 +1,12 @@
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
+type AppInfo = {
+  version: string;
+  platform: string;
+  arch: string;
+};
+
 type SeatState = 'active' | 'locked' | 'offline';
 
 type Seat = {
@@ -6,13 +15,21 @@ type Seat = {
   state: SeatState;
 };
 
-const seats: Seat[] = [
-  { id: 'seat-01', user: 'Alice', state: 'active' },
-  { id: 'seat-02', user: 'Bob', state: 'active' },
-  { id: 'seat-03', user: 'Carol', state: 'locked' },
-];
-
 function App() {
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [selectedSeat, setSelectedSeat] = useState('seat-01');
+  const [sessions, setSessions] = useState<Seat[]>([]);
+
+  useEffect(() => {
+    void Promise.all([
+      invoke<AppInfo>('app_info'),
+      invoke<Seat[]>('list_sessions'),
+    ]).then(([info, discoveredSessions]) => {
+      setAppInfo(info);
+      setSessions(discoveredSessions);
+    });
+  }, []);
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -22,7 +39,7 @@ function App() {
         </div>
         <div className="device-status">
           <span className="status-dot online" />
-          WS-1042 · Online
+          Local agent · {appInfo ? `${appInfo.platform}/${appInfo.arch}` : 'starting'}
         </div>
       </header>
 
@@ -30,30 +47,41 @@ function App() {
         <aside className="sidebar">
           <div className="section-heading">
             <span>Seats</span>
-            <span className="count">{seats.length}</span>
+            <span className="count">{sessions.length}</span>
           </div>
 
-          <div className="seat-list">
-            {seats.map((seat) => (
-              <button className="seat-card" key={seat.id} type="button">
-                <span className={`status-dot ${seat.state}`} />
-                <span className="seat-copy">
-                  <strong>{seat.id}</strong>
-                  <span>{seat.user}</span>
-                </span>
-                <span className="seat-state">{seat.state}</span>
-              </button>
-            ))}
-          </div>
+          {sessions.length === 0 ? (
+            <div className="empty-state">
+              Session discovery is not enabled yet for this operating system.
+            </div>
+          ) : (
+            <div className="seat-list">
+              {sessions.map((seat) => (
+                <button
+                  className={`seat-card ${selectedSeat === seat.id ? 'selected' : ''}`}
+                  key={seat.id}
+                  type="button"
+                  onClick={() => setSelectedSeat(seat.id)}
+                >
+                  <span className={`status-dot ${seat.state}`} />
+                  <span className="seat-copy">
+                    <strong>{seat.id}</strong>
+                    <span>{seat.user}</span>
+                  </span>
+                  <span className="seat-state">{seat.state}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </aside>
 
         <section className="viewer-panel">
           <div className="viewer-toolbar">
             <div>
               <span className="label">Selected session</span>
-              <strong>seat-01 · Alice</strong>
+              <strong>{selectedSeat}</strong>
             </div>
-            <button className="connect-button" type="button">
+            <button className="connect-button" type="button" disabled>
               Connect
             </button>
           </div>
@@ -61,7 +89,7 @@ function App() {
           <div className="viewer-placeholder">
             <div className="placeholder-icon">▣</div>
             <h2>Remote desktop</h2>
-            <p>Select a seat and connect to its desktop session.</p>
+            <p>VNC/RFB transport will attach to the selected desktop session.</p>
           </div>
         </section>
       </section>
