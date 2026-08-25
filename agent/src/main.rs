@@ -18,7 +18,7 @@ use tokio::{
     net::TcpStream,
     signal,
     sync::{Mutex, oneshot},
-    time::{Duration, sleep},
+    time::Duration,
 };
 use tracing::{info, warn};
 
@@ -392,10 +392,6 @@ async fn start_session(
     session_supervisor::ensure_session(state, id).await
 }
 
-fn allocate_worker_port(workers: &HashMap<u32, RemoteSession>, first_port: u16) -> Option<u16> {
-    (first_port..=MAX_VNC_PORT).find(|port| workers.values().all(|worker| worker.port != *port))
-}
-
 #[cfg(windows)]
 fn spawn_worker(
     session_id: u32,
@@ -611,7 +607,8 @@ fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    let service_manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service_manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = service_manager.open_service(
         SERVICE_NAME,
         ServiceAccess::START | ServiceAccess::QUERY_STATUS,
@@ -793,8 +790,7 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
     Err("Windows only".into())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     if args.print_identity {
         let identity = load_or_create_identity()?;
@@ -819,8 +815,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return run_as_windows_service();
     }
 
-    let shutdown = async {
-        let _ = signal::ctrl_c().await;
-    };
-    run_server(args.listen, shutdown, None).await
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(run_server(
+        args.listen,
+        async {
+            let _ = signal::ctrl_c().await;
+        },
+        None,
+    ))
 }
