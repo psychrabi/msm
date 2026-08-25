@@ -31,10 +31,11 @@ if ($Existing) {
 }
 
 $Binary = Join-Path $InstallDir "msm-agent.exe"
-$BinPath = '"{0}" --listen 0.0.0.0:40123' -f $Binary
+$BinPath = '"{0}" --service' -f $Binary
 
-# New-Service avoids the quoting/argument parsing ambiguity of sc.exe when
-# BinaryPathName contains a quoted executable path plus command-line arguments.
+# The Windows service must enter through the SCM dispatcher. Do not pass the
+# normal --listen mode here; --service is responsible for registering with SCM
+# and starting the agent listener from the service process.
 New-Service `
     -Name $ServiceName `
     -BinaryPathName $BinPath `
