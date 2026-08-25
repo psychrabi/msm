@@ -4,8 +4,8 @@ use tokio::{net::TcpStream, time::sleep};
 use tracing::{info, warn};
 
 use crate::{
-    allocate_worker_port, discover_windows_sessions, spawn_worker, terminate_worker, AppState,
-    RemoteSession, FIRST_VNC_PORT,
+    AppState, FIRST_VNC_PORT, RemoteSession, allocate_worker_port, discover_windows_sessions,
+    spawn_worker, terminate_worker,
 };
 
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
@@ -43,7 +43,9 @@ pub async fn ensure_session(
         // The process itself is authoritative. Checking the VNC socket alone can
         // produce a false positive if another process happens to own the port.
         let process_alive = is_process_alive(existing.worker_pid);
-        let port_ready = TcpStream::connect(("127.0.0.1", existing.port)).await.is_ok();
+        let port_ready = TcpStream::connect(("127.0.0.1", existing.port))
+            .await
+            .is_ok();
 
         if process_alive && port_ready {
             return Ok(existing);
@@ -78,7 +80,10 @@ pub async fn ensure_session(
     let deadline = tokio::time::Instant::now() + WORKER_READY_TIMEOUT;
     loop {
         if !is_process_alive(worker_pid) {
-            return Err(format!("VNC worker for session {session_id} exited before becoming ready").into());
+            return Err(format!(
+                "VNC worker for session {session_id} exited before becoming ready"
+            )
+            .into());
         }
 
         if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
@@ -99,9 +104,7 @@ pub async fn ensure_session(
 
         if tokio::time::Instant::now() >= deadline {
             terminate_worker(worker_pid);
-            return Err(
-                format!("VNC worker for session {session_id} did not become ready").into(),
-            );
+            return Err(format!("VNC worker for session {session_id} did not become ready").into());
         }
         sleep(WORKER_READY_POLL).await;
     }
@@ -138,7 +141,10 @@ async fn reconcile(state: AppState) {
         for (session_id, worker_pid) in stale {
             terminate_worker(worker_pid);
             workers.remove(&session_id);
-            info!(session_id, worker_pid, "removed worker for inactive session");
+            info!(
+                session_id,
+                worker_pid, "removed worker for inactive session"
+            );
         }
     }
 
