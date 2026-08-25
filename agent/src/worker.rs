@@ -9,12 +9,9 @@ use xcap::Monitor;
 #[derive(Debug, Parser)]
 #[command(name = "msm-agent-worker", about = "MSM per-session Windows desktop worker")]
 struct Args {
-    #[arg(long)]
-    session_id: u32,
-    #[arg(long)]
-    port: u16,
-    #[arg(long)]
-    password: String,
+    #[arg(long)] session_id: u32,
+    #[arg(long)] port: u16,
+    #[arg(long)] password: String,
 }
 
 #[tokio::main]
@@ -28,9 +25,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .or_else(|| monitors.into_iter().next()).ok_or("no display available")?;
     let width = monitor.width()?.min(u16::MAX as u32) as u16;
     let height = monitor.height()?.min(u16::MAX as u32) as u16;
-    let server = std::sync::Arc::new(VncServer::new(width, height));
-    server.set_password(Some(args.password.clone()));
-    let mut events = server.events();
+
+    let (server, mut events) = VncServer::new(
+        width,
+        height,
+        format!("MSM Session {}", args.session_id),
+        Some(args.password.clone()),
+    );
+    let server = std::sync::Arc::new(server);
 
     info!(session_id=args.session_id, port=args.port, width, height, "VNC worker starting");
 
@@ -42,13 +44,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         while let Some(event) = events.recv().await {
             match event {
-                ServerEvent::PointerMove { x, y, button_mask, .. } => {
+                ServerEvent::PointerEvent { x, y, button_mask, .. } => {
                     let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
                     apply_buttons(&mut enigo, button_mask);
                 }
-                ServerEvent::KeyPress { down, key, .. } => {
+                ServerEvent::KeyEvent { key, pressed, .. } => {
                     if let Some(mapped) = map_keysym(key) {
-                        let direction = if down { Direction::Press } else { Direction::Release };
+                        let direction = if pressed { Direction::Press } else { Direction::Release };
                         let _ = enigo.key(mapped, direction);
                     } else { warn!(key, "unmapped VNC key symbol"); }
                 }
