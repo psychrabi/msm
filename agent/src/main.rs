@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 use std::{collections::HashMap, env, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
@@ -111,28 +116,46 @@ struct TokenQuery {
     token: String,
 }
 
-fn identity_path() -> Result<PathBuf, io::Error> {
-    let base = dirs::data_local_dir()
+#[cfg(windows)]
+fn agent_data_dir() -> PathBuf {
+    PathBuf::from(r"C:\ProgramData\MSM\agent")
+}
+
+#[cfg(not(windows))]
+fn agent_data_dir() -> Result<PathBuf, io::Error> {
+    dirs::data_local_dir()
         .or_else(dirs::data_dir)
+        .map(|base| base.join("MSM").join("agent"))
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "unable to determine local data directory",
             )
-        })?;
-    Ok(base.join("MSM").join("agent").join("identity.json"))
+        })
+}
+
+fn identity_path() -> Result<PathBuf, io::Error> {
+    #[cfg(windows)]
+    {
+        Ok(agent_data_dir().join("identity.json"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(agent_data_dir()?.join("identity.json"))
+    }
 }
 
 fn token_path() -> Result<PathBuf, io::Error> {
-    let base = dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "unable to determine local data directory",
-            )
-        })?;
-    Ok(base.join("MSM").join("agent").join("access-token"))
+    #[cfg(windows)]
+    {
+        Ok(agent_data_dir().join("access-token"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(agent_data_dir()?.join("access-token"))
+    }
 }
 
 fn load_or_create_identity() -> Result<DeviceIdentity, Box<dyn std::error::Error + Send + Sync>> {
@@ -314,8 +337,8 @@ async fn discover_windows_sessions() -> Vec<SessionInfo> {
 #[cfg(windows)]
 fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
     use windows::Win32::System::RemoteDesktop::{
-        WTS_CURRENT_SERVER_HANDLE, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
-        WTS_SESSION_INFOW, WTSEnumerateSessionsW,
+        WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSEnumerateSessionsW, WTSFreeMemory,
+        WTSQuerySessionInformationW, WTSUserName,
     };
     use windows::core::PWSTR;
 
@@ -624,7 +647,8 @@ fn stop_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    let service_manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service_manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = service_manager.open_service(
         SERVICE_NAME,
         ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,

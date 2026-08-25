@@ -57,7 +57,12 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_websocket::init())
-        .invoke_handler(tauri::generate_handler![app_info, credential_set, credential_get, credential_delete])
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            credential_set,
+            credential_get,
+            credential_delete
+        ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title("MSM — Remote Monitor & Control")?;

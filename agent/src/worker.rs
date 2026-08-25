@@ -2,7 +2,7 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{server::ServerEvent, VncServer};
+use rustvncserver::{VncServer, server::ServerEvent};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 

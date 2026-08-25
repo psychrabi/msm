@@ -3,7 +3,7 @@ use std::{collections::HashSet, net::TcpStream, thread, time::Duration};
 use tracing::{info, warn};
 
 use crate::{
-    spawn_worker, terminate_worker, AppState, RemoteSession, FIRST_VNC_PORT, MAX_VNC_PORT,
+    AppState, FIRST_VNC_PORT, MAX_VNC_PORT, RemoteSession, spawn_worker, terminate_worker,
 };
 
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(3);
@@ -46,8 +46,7 @@ fn reconcile(state: &AppState) {
         }
     };
 
-    let active_sessions: HashSet<u32> =
-        sessions.iter().map(|session| session.session_id).collect();
+    let active_sessions: HashSet<u32> = sessions.iter().map(|session| session.session_id).collect();
 
     // First remove workers whose processes have actually exited. This is the
     // worker-crash/kill recovery path.
@@ -81,8 +80,7 @@ fn reconcile(state: &AppState) {
         for (session_id, worker_pid) in stale {
             info!(
                 session_id,
-                worker_pid,
-                "interactive session ended; stopping worker"
+                worker_pid, "interactive session ended; stopping worker"
             );
             terminate_worker(worker_pid);
             workers.remove(&session_id);
@@ -119,7 +117,12 @@ fn spawn_worker_for_session(
 
     // Re-check after acquiring the lifecycle lock. A viewer request and the
     // watchdog must never create two workers for the same session.
-    if let Some(existing) = state.workers.blocking_lock().get(&session.session_id).cloned() {
+    if let Some(existing) = state
+        .workers
+        .blocking_lock()
+        .get(&session.session_id)
+        .cloned()
+    {
         if is_process_alive(existing.worker_pid) {
             return Ok(existing);
         }
@@ -146,10 +149,7 @@ fn spawn_worker_for_session(
 
     if !wait_for_worker_ready(worker_pid, port) {
         terminate_worker(worker_pid);
-        return Err(format!(
-            "worker PID {worker_pid} did not become ready on port {port}"
-        )
-        .into());
+        return Err(format!("worker PID {worker_pid} did not become ready on port {port}").into());
     }
 
     let remote_session = RemoteSession {
@@ -189,9 +189,7 @@ fn wait_for_worker_ready(pid: u32, port: u16) -> bool {
     false
 }
 
-fn allocate_worker_port(
-    workers: &std::collections::HashMap<u32, RemoteSession>,
-) -> Option<u16> {
+fn allocate_worker_port(workers: &std::collections::HashMap<u32, RemoteSession>) -> Option<u16> {
     (FIRST_VNC_PORT..=MAX_VNC_PORT).find(|port| workers.values().all(|worker| worker.port != *port))
 }
 
@@ -211,14 +209,15 @@ pub async fn ensure_session(
     .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?
 }
 
-fn enumerate_windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
+fn enumerate_windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>>
+{
     #[cfg(windows)]
     {
-        use windows::core::PWSTR;
         use windows::Win32::System::RemoteDesktop::{
-            WTS_CURRENT_SERVER_HANDLE, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
-            WTS_SESSION_INFOW, WTSEnumerateSessionsW,
+            WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSEnumerateSessionsW, WTSFreeMemory,
+            WTSQuerySessionInformationW, WTSUserName,
         };
+        use windows::core::PWSTR;
 
         unsafe {
             let mut sessions_ptr: *mut WTS_SESSION_INFOW = std::ptr::null_mut();
@@ -311,8 +310,8 @@ fn is_process_alive(pid: u32) -> bool {
             };
 
             let mut exit_code = 0u32;
-            let alive = GetExitCodeProcess(process, &mut exit_code).is_ok()
-                && exit_code == STILL_ACTIVE;
+            let alive =
+                GetExitCodeProcess(process, &mut exit_code).is_ok() && exit_code == STILL_ACTIVE;
             let _ = CloseHandle(process);
             alive
         }

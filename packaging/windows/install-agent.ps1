@@ -36,8 +36,13 @@ if (Test-Path -LiteralPath $InstalledAgent -PathType Leaf) {
 
     if ($ExistingService) {
         & $InstalledAgent --uninstall-service 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "MSM Agent service uninstall failed (exit code $LASTEXITCODE)."
+
+        $UninstallExitCode = $LASTEXITCODE
+
+        $ServiceStillExists = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+
+        if ($ServiceStillExists) {
+            throw "MSM Agent service uninstall failed (exit code $UninstallExitCode)."
         }
     }
 }
