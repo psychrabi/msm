@@ -6,7 +6,7 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{VncServer, server::ServerEvent};
+use rustvncserver::{server::ServerEvent, VncServer};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -99,10 +99,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 ServerEvent::ClientConnected { client_id } => {
                     previous_button_mask = 0;
-                    info!(
-                        session_id = event_session_id,
-                        client_id, "VNC client connected"
-                    );
+                    info!(session_id = event_session_id, client_id, "VNC client connected");
                 }
                 ServerEvent::ClientDisconnected { .. } => {
                     if previous_button_mask != 0 {
@@ -127,9 +124,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(text) = get_windows_clipboard() {
                 let changed = last_text.as_ref() != Some(&text);
                 if changed {
-                    if let Err(error) = clipboard_runtime
-                        .block_on(clipboard_server.send_cut_text_to_all(text.clone()))
-                    {
+                    if let Err(error) = clipboard_runtime.block_on(
+                        clipboard_server.send_cut_text_to_all(text.clone()),
+                    ) {
                         warn!(
                             session_id = clipboard_session_id,
                             ?error,
@@ -212,13 +209,15 @@ fn get_windows_clipboard() -> Option<String> {
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Ole::CF_UNICODETEXT;
 
+    let clipboard_format = CF_UNICODETEXT.0 as u32;
+
     unsafe {
         if OpenClipboard(None).is_err() {
             return None;
         }
 
-        let result = if IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() {
-            let handle = match GetClipboardData(CF_UNICODETEXT) {
+        let result = if IsClipboardFormatAvailable(clipboard_format).is_ok() {
+            let handle = match GetClipboardData(clipboard_format) {
                 Ok(value) => HGLOBAL(value.0),
                 Err(_) => {
                     let _ = CloseClipboard();
@@ -268,6 +267,7 @@ fn set_windows_clipboard(text: &str) -> Result<(), Box<dyn Error + Send + Sync>>
 
     let mut wide: Vec<u16> = text.encode_utf16().collect();
     wide.push(0);
+    let clipboard_format = CF_UNICODETEXT.0 as u32;
 
     unsafe {
         OpenClipboard(None)?;
@@ -291,7 +291,7 @@ fn set_windows_clipboard(text: &str) -> Result<(), Box<dyn Error + Send + Sync>>
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
         let _ = GlobalUnlock(memory);
 
-        if let Err(error) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))) {
+        if let Err(error) = SetClipboardData(clipboard_format, Some(HANDLE(memory.0))) {
             let _ = CloseClipboard();
             return Err(error.into());
         }
@@ -311,8 +311,8 @@ fn set_windows_clipboard(_text: &str) -> Result<(), Box<dyn Error + Send + Sync>
 #[cfg(target_os = "windows")]
 fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, mouse_event,
+        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     };
 
     let transitions = [
@@ -343,48 +343,49 @@ fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn apply_button_transitions(_previous_mask: u8, _current_mask: u8) {}
-
 fn map_keysym(key: u32) -> Option<Key> {
-    let mapped = match key {
-        0xff08 => Key::Backspace,
-        0xff09 => Key::Tab,
-        0xff0d => Key::Return,
-        0xff1b => Key::Escape,
-        0xff50 => Key::Home,
-        0xff51 => Key::LeftArrow,
-        0xff52 => Key::UpArrow,
-        0xff53 => Key::RightArrow,
-        0xff54 => Key::DownArrow,
-        0xff55 => Key::PageUp,
-        0xff56 => Key::PageDown,
-        0xff57 => Key::End,
-        0xff63 => Key::Insert,
-        0xffff => Key::Delete,
-        0xffbe => Key::F1,
-        0xffbf => Key::F2,
-        0xffc0 => Key::F3,
-        0xffc1 => Key::F4,
-        0xffc2 => Key::F5,
-        0xffc3 => Key::F6,
-        0xffc4 => Key::F7,
-        0xffc5 => Key::F8,
-        0xffc6 => Key::F9,
-        0xffc7 => Key::F10,
-        0xffc8 => Key::F11,
-        0xffc9 => Key::F12,
-        0xffe1 => Key::Shift,
-        0xffe2 => Key::RShift,
-        0xffe3 => Key::Control,
-        0xffe4 => Key::RControl,
-        0xffe9 => Key::Alt,
-        0xffea => Key::Alt,
-        0xffeb => Key::Meta,
-        0xffec => Key::Meta,
-        0x20 => Key::Space,
-        0x21..=0x7e => Key::Unicode(char::from_u32(key)?),
-        _ => return None,
-    };
-    Some(mapped)
+    match key {
+        0xFF08 => Some(Key::Backspace),
+        0xFF09 => Some(Key::Tab),
+        0xFF0D => Some(Key::Return),
+        0xFF1B => Some(Key::Escape),
+        0xFF50 => Some(Key::Home),
+        0xFF51 => Some(Key::LeftArrow),
+        0xFF52 => Some(Key::UpArrow),
+        0xFF53 => Some(Key::RightArrow),
+        0xFF54 => Some(Key::DownArrow),
+        0xFF55 => Some(Key::PageUp),
+        0xFF56 => Some(Key::PageDown),
+        0xFF57 => Some(Key::End),
+        0xFF63 => Some(Key::Insert),
+        0xFFFF => Some(Key::Delete),
+        0xFFE1 => Some(Key::Shift),
+        0xFFE2 => Some(Key::Shift),
+        0xFFE3 => Some(Key::Control),
+        0xFFE4 => Some(Key::Control),
+        0xFFE9 => Some(Key::Alt),
+        0xFFEA => Some(Key::Alt),
+        0xFFEB => Some(Key::Meta),
+        0xFFEC => Some(Key::Meta),
+        0xFFBE => Some(Key::F1),
+        0xFFBF => Some(Key::F2),
+        0xFFC0 => Some(Key::F3),
+        0xFFC1 => Some(Key::F4),
+        0xFFC2 => Some(Key::F5),
+        0xFFC3 => Some(Key::F6),
+        0xFFC4 => Some(Key::F7),
+        0xFFC5 => Some(Key::F8),
+        0xFFC6 => Some(Key::F9),
+        0xFFC7 => Some(Key::F10),
+        0xFFC8 => Some(Key::F11),
+        0xFFC9 => Some(Key::F12),
+        0x20 => Some(Key::Space),
+        0x2D => Some(Key::Unicode('-')),
+        0x2E => Some(Key::Unicode('.')),
+        0x2F => Some(Key::Unicode('/')),
+        0x30..=0x39 => char::from_u32(key).map(Key::Unicode),
+        0x41..=0x5A => char::from_u32(key).map(Key::Unicode),
+        0x61..=0x7A => char::from_u32(key).map(Key::Unicode),
+        _ => char::from_u32(key).map(Key::Unicode),
+    }
 }
