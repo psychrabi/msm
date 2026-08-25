@@ -1,12 +1,17 @@
-use std::{env, error::Error, time::Duration};
+use std::{
+    env,
+    error::Error,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use clap::Parser;
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{VncServer, server::ServerEvent};
+use rustvncserver::{server::ServerEvent, VncServer};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Clone)]
 #[command(
     name = "msm-agent-worker",
     about = "MSM per-session Windows desktop worker"
@@ -18,6 +23,10 @@ struct Args {
     port: u16,
     #[arg(long)]
     password: String,
+    #[arg(long, hide = true)]
+    supervisor: bool,
+    #[arg(long, hide = true)]
+    child: bool,
 }
 
 #[tokio::main]
@@ -26,6 +35,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     if env::consts::OS != "windows" {
         return Err("Windows only".into());
+    }
+
+    if args.supervisor {
+        return supervise_worker(&args);
+    }
+
+    if !args.child {
+        spawn_supervisor(&args)?;
     }
 
     // xcap::Monitor contains native Windows handles and is not Send. The
@@ -160,6 +177,101 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     server.listen(args.port).await?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_supervisor(args: &Args) -> Result<(), Box<dyn Error>> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let executable = env::current_exe()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--session-id")
+        .arg(args.session_id.to_string())
+        .arg("--port")
+        .arg(args.port.to_string())
+        .arg("--password")
+        .arg(&args.password)
+        .arg("--supervisor")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+    command.spawn()?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn spawn_supervisor(_args: &Args) -> Result<(), Box<dyn Error>> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn supervise_worker(args: &Args) -> Result<(), Box<dyn Error>> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let executable = env::current_exe()?;
+
+    loop {
+        let mut command = Command::new(&executable);
+        command
+            .arg("--session-id")
+            .arg(args.session_id.to_string())
+            .arg("--port")
+            .arg(args.port.to_string())
+            .arg("--password")
+            .arg(&args.password)
+            .arg("--child")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+
+        match command.spawn() {
+            Ok(mut child) => {
+                let pid = child.id();
+                info!(
+                    session_id = args.session_id,
+                    pid,
+                    "worker supervisor started worker"
+                );
+                match child.wait() {
+                    Ok(status) => {
+                        warn!(
+                            session_id = args.session_id,
+                            pid,
+                            ?status,
+                            "worker exited; restarting"
+                        );
+                    }
+                    Err(error) => {
+                        warn!(
+                            session_id = args.session_id,
+                            pid,
+                            ?error,
+                            "unable to wait for worker; restarting"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                error!(
+                    session_id = args.session_id,
+                    ?error,
+                    "worker supervisor failed to start worker"
+                );
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[cfg(not(windows))]
+fn supervise_worker(_args: &Args) -> Result<(), Box<dyn Error>> {
+    Err("Windows only".into())
 }
 
 fn apply_buttons(enigo: &mut Enigo, mask: u8) {
