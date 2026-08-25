@@ -1,8 +1,8 @@
 use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
-use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{VncServer, server::ServerEvent};
+use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use rustvncserver::{server::ServerEvent, VncServer};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     x, y, button_mask, ..
                 } => {
                     let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
-                    apply_button_transitions(&mut enigo, previous_button_mask, button_mask);
+                    apply_button_transitions(previous_button_mask, button_mask);
                     previous_button_mask = button_mask;
                 }
                 ServerEvent::KeyPress { key, down, .. } => {
@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 ServerEvent::ClientDisconnected { .. } => {
                     if previous_button_mask != 0 {
-                        apply_button_transitions(&mut enigo, previous_button_mask, 0);
+                        apply_button_transitions(previous_button_mask, 0);
                         previous_button_mask = 0;
                     }
                 }
@@ -161,12 +161,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn apply_button_transitions(enigo: &mut Enigo, previous_mask: u8, current_mask: u8) {
-    for (bit, button) in [
-        (1u8, Button::Left),
-        (2u8, Button::Middle),
-        (4u8, Button::Right),
-    ] {
+#[cfg(target_os = "windows")]
+fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    };
+
+    let transitions = [
+        (1u8, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, "left"),
+        (2u8, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, "middle"),
+        (4u8, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, "right"),
+    ];
+
+    for (bit, down_flag, up_flag, name) in transitions {
         let was_pressed = previous_mask & bit != 0;
         let is_pressed = current_mask & bit != 0;
 
@@ -174,14 +182,22 @@ fn apply_button_transitions(enigo: &mut Enigo, previous_mask: u8, current_mask: 
             continue;
         }
 
-        let direction = if is_pressed {
-            Direction::Press
-        } else {
-            Direction::Release
-        };
-        let _ = enigo.button(button, direction);
+        let flag = if is_pressed { down_flag } else { up_flag };
+        unsafe {
+            mouse_event(flag, 0, 0, 0, 0);
+        }
+        info!(
+            previous_mask,
+            current_mask,
+            button = name,
+            pressed = is_pressed,
+            "VNC mouse button transition"
+        );
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+fn apply_button_transitions(_previous_mask: u8, _current_mask: u8) {}
 
 fn map_keysym(key: u32) -> Option<Key> {
     let mapped = match key {
