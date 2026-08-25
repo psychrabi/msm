@@ -6,7 +6,7 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{server::ServerEvent, VncServer};
+use rustvncserver::{VncServer, server::ServerEvent};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -102,8 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     previous_button_mask = 0;
                     info!(
                         session_id = event_session_id,
-                        client_id,
-                        "VNC client connected"
+                        client_id, "VNC client connected"
                     );
                 }
                 ServerEvent::ClientDisconnected { .. } => {
@@ -229,7 +228,10 @@ fn get_windows_clipboard() -> Option<String> {
             } else {
                 let max_units = (size as usize) / std::mem::size_of::<u16>();
                 let slice = std::slice::from_raw_parts(ptr as *const u16, max_units);
-                let len = slice.iter().position(|value| *value == 0).unwrap_or(max_units);
+                let len = slice
+                    .iter()
+                    .position(|value| *value == 0)
+                    .unwrap_or(max_units);
                 let text = String::from_utf16_lossy(&slice[..len]);
                 let _ = GlobalUnlock(handle.0 as _);
                 Some(text)
@@ -250,12 +252,12 @@ fn get_windows_clipboard() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn set_windows_clipboard(text: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
     use windows::Win32::System::Ole::CF_UNICODETEXT;
-    use windows::Win32::Foundation::HANDLE;
 
     let mut wide: Vec<u16> = text.encode_utf16().collect();
     wide.push(0);
