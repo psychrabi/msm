@@ -11,13 +11,25 @@ use crate::{
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKER_READY_POLL: Duration = Duration::from_millis(100);
+const SUPERVISOR_RESTART_DELAY: Duration = Duration::from_secs(1);
 
 pub async fn run(state: AppState) {
-    reconcile(&state).await;
+    info!("session supervisor started");
 
     loop {
-        sleep(SUPERVISOR_INTERVAL).await;
-        reconcile(&state).await;
+        let reconcile_task = tokio::spawn(reconcile(state.clone()));
+
+        match reconcile_task.await {
+            Ok(()) => {}
+            Err(error) if error.is_panic() => {
+                warn!("session supervisor reconciliation panicked; restarting");
+            }
+            Err(error) => {
+                warn!(%error, "session supervisor reconciliation task was cancelled; restarting");
+            }
+        }
+
+        sleep(SUPERVISOR_RESTART_DELAY).await;
     }
 }
 
@@ -34,6 +46,7 @@ pub async fn ensure_session(
 
         warn!(
             session_id,
+            worker_pid = existing.worker_pid,
             port = existing.port,
             "VNC worker stopped responding; restarting"
         );
@@ -49,6 +62,8 @@ pub async fn ensure_session(
 
     let password = state.auth_token.chars().take(8).collect::<String>();
     let worker_pid = spawn_worker(session_id, port, &password)?;
+
+    info!(session_id, worker_pid, port, "started VNC worker");
 
     let deadline = tokio::time::Instant::now() + WORKER_READY_TIMEOUT;
     loop {
@@ -78,7 +93,7 @@ pub async fn ensure_session(
     }
 }
 
-async fn reconcile(state: &AppState) {
+async fn reconcile(state: AppState) {
     let active_sessions = discover_windows_sessions().await;
     let active_ids: HashSet<u32> = active_sessions
         .iter()
@@ -86,7 +101,7 @@ async fn reconcile(state: &AppState) {
         .collect();
 
     for session_id in &active_ids {
-        if let Err(error) = ensure_session(state, *session_id).await {
+        if let Err(error) = ensure_session(&state, *session_id).await {
             warn!(session_id, %error, "failed to ensure VNC worker");
         }
     }
@@ -109,4 +124,6 @@ async fn reconcile(state: &AppState) {
             info!(session_id, worker_pid, "removed worker for inactive session");
         }
     }
+
+    sleep(SUPERVISOR_INTERVAL).await;
 }
