@@ -71,9 +71,11 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const disposingRef = useRef(false);
+  const viewOnlyRef = useRef(viewOnly);
   const onDisconnectRef = useRef(onDisconnect);
   const onErrorRef = useRef(onError);
 
+  useEffect(() => { viewOnlyRef.current = viewOnly; }, [viewOnly]);
   useEffect(() => { onDisconnectRef.current = onDisconnect; }, [onDisconnect]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
@@ -96,8 +98,9 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
     rfb.addEventListener('clipboard', (event) => {
-      const text = event.detail.text;
-      void navigator.clipboard?.writeText(text).catch(() => undefined);
+      if (navigator.clipboard) {
+        void navigator.clipboard.writeText(event.detail.text).catch(() => undefined);
+      }
     });
     rfb.addEventListener('securityfailure', (event) => onErrorRef.current(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`));
     rfb.addEventListener('disconnect', (event) => {
@@ -109,7 +112,7 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     rfbRef.current = rfb;
 
     const handlePaste = (event: ClipboardEvent) => {
-      if (viewOnly || !event.clipboardData || !rfbRef.current) return;
+      if (viewOnlyRef.current || !event.clipboardData || !rfbRef.current) return;
       const text = event.clipboardData.getData('text/plain');
       if (!text) return;
       event.preventDefault();
@@ -130,7 +133,7 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
       try { rfb.disconnect(); } catch { /* already disconnected */ }
       container.replaceChildren();
     };
-  }, [remote.sessionId, remote.vncPassword, endpoint, token, viewOnly]);
+  }, [remote.sessionId, remote.vncPassword, endpoint, token]);
 
   useEffect(() => {
     if (rfbRef.current) rfbRef.current.viewOnly = viewOnly;
