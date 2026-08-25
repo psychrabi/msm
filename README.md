@@ -43,7 +43,7 @@ The current product target is **Windows only**. Linux and macOS implementations 
 - `rustvncserver` for RFB/VNC server functionality.
 - `xcap` for Windows desktop capture.
 - `enigo` for Windows keyboard/mouse input injection.
-- `windows` crate for Windows Terminal Services/session APIs and user-session process creation.
+- `windows` crate for Windows Terminal Services/session APIs, user-session process creation, and session clipboard integration.
 - `@novnc/novnc` for the viewer-side VNC client.
 - Native Windows credential storage for persisted agent access tokens.
 - Prefer established Tauri plugins and mature Rust crates over custom infrastructure.
@@ -80,8 +80,9 @@ The standalone Windows agent provides:
 - Per-session worker lifecycle and respawn.
 - Per-session VNC server lifecycle.
 - Authenticated WebSocket-to-VNC proxy.
+- Bidirectional text clipboard bridging between the Windows user session and VNC clients.
 
-The worker runs inside the target user's Windows session. This is important: screen capture and input injection are performed in the target session rather than by a single machine-wide desktop process.
+The worker runs inside the target user's Windows session. This is important: screen capture, clipboard access, and input injection are performed in the target session rather than by a single machine-wide desktop process.
 
 ### Local development
 
@@ -132,7 +133,11 @@ Enable **Remember** to persist the connection. The endpoint is stored as viewer 
 
 Saved credentials are associated with the agent endpoint, so different managed computers can use different access tokens. **Forget** removes the saved endpoint and its native credential. If an agent rejects a saved credential with `401 Unauthorized`, the viewer clears that credential and requires a new token instead of repeatedly retrying an invalid credential.
 
-The viewer discovers active Windows sessions, starts a worker for the selected session, and embeds noVNC for the resulting remote desktop.
+The monitoring view keeps active sessions in a sidebar and independently connected VNC viewers in a responsive grid. Sessions are **not** opened automatically when the agent connects. Switching pages or sessions does not implicitly reconnect or replace an existing remote viewer.
+
+The default viewer mode is **View only**. Control mode can be enabled explicitly. Mouse and keyboard input are delivered through the selected user's worker session.
+
+The viewer also bridges text clipboard data: remote clipboard updates are copied to the operator clipboard when permitted by the Tauri webview, and paste events in a controllable viewer are sent through noVNC to the remote session.
 
 ## Current remote desktop path
 
@@ -148,6 +153,7 @@ MSM Agent service (LocalSystem)
 msm-agent-worker
     │
     ├── xcap → target desktop framebuffer
+    ├── Windows clipboard ↔ rustvncserver clipboard events
     ├── rustvncserver → RFB
     └── enigo ← keyboard/mouse
     │
@@ -160,6 +166,6 @@ noVNC in Viewer
 
 If the worker process exits while its Windows session is still active, the service recreates the worker. A worker is therefore not expected to be manually launched or kept alive by a visible console window.
 
-The first implementation captures the primary monitor at a modest fixed frame cadence and supports basic mouse/keyboard input. Performance tuning, dirty-region capture, multi-monitor support, richer key mapping, clipboard, and production-grade transport security are subsequent hardening work.
+The first implementation captures the primary monitor at a modest fixed frame cadence. Remaining hardening work includes performance/dirty-region capture, multi-monitor support, richer key mapping, remote-session reconnect behavior after worker replacement, multi-agent management, transport encryption, credential provisioning/rotation, and production authorization/network policy.
 
 The development control/VNC endpoints are not a production Internet security boundary yet. Do not expose them directly to the public Internet.
