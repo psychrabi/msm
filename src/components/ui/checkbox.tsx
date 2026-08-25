@@ -17,10 +17,8 @@ export function Checkbox({ className, onCheckedChange, ...props }: CheckboxProps
       onCheckedChange={onCheckedChange}
       {...props}
     >
-      <CheckboxPrimitive.Indicator asChild>
-        <span className="flex items-center justify-center text-current">
-          <Check className="h-4 w-4" />
-        </span>
+      <CheckboxPrimitive.Indicator>
+        <Check className="h-4 w-4" />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   );
