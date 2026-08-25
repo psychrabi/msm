@@ -13,7 +13,7 @@ const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION"); const DEFAULT_LISTEN: &st
 #[derive(Debug,Clone,Serialize)] #[serde(rename_all="camelCase")] struct RemoteSession{session_id:String,port:u16,vnc_password:String}
 #[derive(Clone)] struct AppState{identity:DeviceIdentity,auth_token:String,workers:Arc<Mutex<HashMap<u32,RemoteSession>>>}
 #[derive(Debug,Serialize)] #[serde(tag="type",rename_all="camelCase")] enum ServerMessage{Hello{identity:DeviceIdentity},Sessions{sessions:Vec<SessionInfo>},RemoteSession{session:RemoteSession},Error{message:String}}
-#[derive(Debug,Deserialize)] #[serde(tag="type",rename_all="camelCase")] enum ClientMessage{ListSessions,StartSession{session_id:String},Ping}
+#[derive(Debug,Deserialize)] #[serde(tag="type",rename_all="camelCase")] enum ClientMessage{ListSessions,StartSession{#[serde(rename="sessionId")] session_id:String},Ping}
 #[derive(Debug,Deserialize)] struct TokenQuery{token:String}
 fn identity_path()->Result<PathBuf,io::Error>{let base=dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?;Ok(base.join("MSM").join("agent").join("identity.json"))}
 fn token_path()->Result<PathBuf,io::Error>{let base=dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?;Ok(base.join("MSM").join("agent").join("access-token"))}
