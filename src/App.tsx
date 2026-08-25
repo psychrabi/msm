@@ -95,6 +95,10 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
+    rfb.addEventListener('clipboard', (event) => {
+      const text = event.detail.text;
+      void navigator.clipboard?.writeText(text).catch(() => undefined);
+    });
     rfb.addEventListener('securityfailure', (event) => onErrorRef.current(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`));
     rfb.addEventListener('disconnect', (event) => {
       // Ignore disconnects caused by this effect's cleanup. In development React
@@ -104,6 +108,15 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     });
     rfbRef.current = rfb;
 
+    const handlePaste = (event: ClipboardEvent) => {
+      if (viewOnly || !event.clipboardData || !rfbRef.current) return;
+      const text = event.clipboardData.getData('text/plain');
+      if (!text) return;
+      event.preventDefault();
+      rfb.clipboardPasteFrom(text);
+    };
+    container.addEventListener('paste', handlePaste);
+
     const resizeObserver = new ResizeObserver(() => {
       if (rfbRef.current === rfb) rfb.scaleViewport = true;
     });
@@ -111,12 +124,13 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
 
     return () => {
       disposingRef.current = true;
+      container.removeEventListener('paste', handlePaste);
       resizeObserver.disconnect();
       if (rfbRef.current === rfb) rfbRef.current = null;
       try { rfb.disconnect(); } catch { /* already disconnected */ }
       container.replaceChildren();
     };
-  }, [remote.sessionId, remote.vncPassword, endpoint, token]);
+  }, [remote.sessionId, remote.vncPassword, endpoint, token, viewOnly]);
 
   useEffect(() => {
     if (rfbRef.current) rfbRef.current.viewOnly = viewOnly;
