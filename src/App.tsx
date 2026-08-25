@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
@@ -10,6 +11,7 @@ type Session = {
   seatId?: string | null;
   display?: string | null;
 };
+
 type DeviceIdentity = {
   deviceId: string;
   deviceName: string;
@@ -17,11 +19,13 @@ type DeviceIdentity = {
   architecture: string;
   agentVersion: string;
 };
+
 type RemoteSession = {
   sessionId: string;
   port: number;
   vncPassword: string;
 };
+
 type AgentMessage =
   | { type: 'hello'; identity: DeviceIdentity }
   | { type: 'sessions'; sessions: Session[] }
@@ -30,39 +34,66 @@ type AgentMessage =
 
 type SavedConnection = {
   endpoint: string;
-  token: string;
 };
 
 const SAVED_CONNECTION_KEY = 'msm.saved-agent-connection';
+const LEGACY_TOKEN_KEY = 'msm.saved-agent-token';
 const RECONNECT_DELAY_MS = 3000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 const REMOTE_RECONNECT_DELAY_MS = 2000;
 
-function loadSavedConnection(): SavedConnection | null {
+function normalizeEndpoint(endpoint: string): string {
+  const value = endpoint.trim();
+  if (!value) return value;
+  if (/^https?:\/\//i.test(value)) {
+    const ws = value.replace(/^http/i, 'ws').replace(/\/$/, '');
+    return ws.endsWith('/ws') ? ws : `${ws}/ws`;
+  }
+  if (/^wss?:\/\//i.test(value)) {
+    const ws = value.replace(/\/$/, '');
+    return ws.endsWith('/ws') ? ws : `${ws}/ws`;
+  }
+  return `ws://${value.replace(/\/$/, '')}/ws`;
+}
+
+function loadSavedEndpoint(): string | null {
   try {
     const raw = localStorage.getItem(SAVED_CONNECTION_KEY);
     if (!raw) return null;
     const saved = JSON.parse(raw) as Partial<SavedConnection>;
-    if (
-      typeof saved.endpoint !== 'string' ||
-      typeof saved.token !== 'string' ||
-      !saved.endpoint ||
-      !saved.token
-    ) {
-      return null;
-    }
-    return { endpoint: saved.endpoint, token: saved.token };
+    return typeof saved.endpoint === 'string' && saved.endpoint
+      ? normalizeEndpoint(saved.endpoint)
+      : null;
   } catch {
     return null;
   }
 }
 
-function saveConnection(connection: SavedConnection) {
-  localStorage.setItem(SAVED_CONNECTION_KEY, JSON.stringify(connection));
+function saveEndpoint(endpoint: string) {
+  localStorage.setItem(
+    SAVED_CONNECTION_KEY,
+    JSON.stringify({ endpoint: normalizeEndpoint(endpoint) } satisfies SavedConnection),
+  );
 }
 
-function clearSavedConnection() {
+function clearSavedEndpoint() {
   localStorage.removeItem(SAVED_CONNECTION_KEY);
+}
+
+function credentialKey(endpoint: string): string {
+  return `agent-token:${normalizeEndpoint(endpoint)}`;
+}
+
+async function getCredential(endpoint: string): Promise<string | null> {
+  return invoke<string | null>('credential_get', { key: credentialKey(endpoint) });
+}
+
+async function setCredential(endpoint: string, token: string): Promise<void> {
+  await invoke('credential_set', { key: credentialKey(endpoint), secret: token });
+}
+
+async function deleteCredential(endpoint: string): Promise<void> {
+  await invoke('credential_delete', { key: credentialKey(endpoint) });
 }
 
 function isUnauthorizedError(error: unknown): boolean {
@@ -70,29 +101,13 @@ function isUnauthorizedError(error: unknown): boolean {
   return /\b401\b|unauthorized|authentication failed|not authorized/i.test(message);
 }
 
-function normalizeEndpoint(endpoint: string): string {
-  const value = endpoint.trim();
-  if (!value) return value;
-  if (/^https?:\/\//i.test(value)) {
-    return value.replace(/^http/i, 'ws').replace(/\/$/, '') + '/ws';
-  }
-  if (/^wss?:\/\//i.test(value)) {
-    return value.replace(/\/$/, '').endsWith('/ws')
-      ? value.replace(/\/$/, '')
-      : `${value.replace(/\/$/, '')}/ws`;
-  }
-  return `ws://${value.replace(/\/$/, '')}/ws`;
-}
-
 function App() {
-  const initialSavedConnection = useRef(loadSavedConnection());
+  const initialEndpoint = loadSavedEndpoint();
   const [endpoint, setEndpoint] = useState(
-    initialSavedConnection.current?.endpoint ?? 'ws://127.0.0.1:40123/ws',
+    initialEndpoint ?? 'ws://127.0.0.1:40123/ws',
   );
-  const [token, setToken] = useState(initialSavedConnection.current?.token ?? '');
-  const [rememberConnection, setRememberConnection] = useState(
-    Boolean(initialSavedConnection.current),
-  );
+  const [token, setToken] = useState('');
+  const [rememberConnection, setRememberConnection] = useState(Boolean(initialEndpoint));
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [identity, setIdentity] = useState<DeviceIdentity | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -101,7 +116,8 @@ function App() {
   const [error, setError] = useState('');
   const [remote, setRemote] = useState<RemoteSession | null>(null);
   const [connectingRemote, setConnectingRemote] = useState(false);
-  const [reconnectEnabled, setReconnectEnabled] = useState(Boolean(initialSavedConnection.current));
+  const [credentialsReady, setCredentialsReady] = useState(!initialEndpoint);
+
   const viewerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -111,6 +127,7 @@ function App() {
   const remoteReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectingRef = useRef(false);
   const manualDisconnectRef = useRef(false);
+  const reconnectEnabledRef = useRef(Boolean(initialEndpoint));
   const selectedSessionRef = useRef(selectedSession);
   const sessionsRef = useRef(sessions);
 
@@ -130,6 +147,46 @@ function App() {
     sessionsRef.current = sessions;
   }, [sessions]);
 
+  useEffect(() => {
+    if (!initialEndpoint) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        let storedToken = await getCredential(initialEndpoint);
+
+        // One-time migration from the old localStorage implementation.
+        if (!storedToken) {
+          const legacyToken = localStorage.getItem(LEGACY_TOKEN_KEY);
+          if (legacyToken) {
+            await setCredential(initialEndpoint, legacyToken);
+            localStorage.removeItem(LEGACY_TOKEN_KEY);
+            localStorage.removeItem('msm.saved-agent-connection-token');
+            storedToken = legacyToken;
+          }
+        }
+
+        if (!cancelled) {
+          setToken(storedToken ?? '');
+          setCredentialsReady(true);
+        }
+      } catch (credentialError) {
+        if (!cancelled) {
+          setCredentialsReady(true);
+          setError(
+            `Unable to access the Windows credential store: ${
+              credentialError instanceof Error ? credentialError.message : String(credentialError)
+            }`,
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialEndpoint]);
+
   function clearReconnectTimer() {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -145,13 +202,13 @@ function App() {
       try {
         await current.disconnect();
       } catch {
-        // The connection may already have been closed.
+        // Already closed.
       }
     }
   }
 
   function scheduleReconnect() {
-    if (!reconnectEnabled || manualDisconnectRef.current || !tokenRef.current) return;
+    if (!reconnectEnabledRef.current || manualDisconnectRef.current || !tokenRef.current) return;
     if (reconnectTimerRef.current) return;
 
     setStatus('Reconnecting…');
@@ -171,10 +228,10 @@ function App() {
   }
 
   async function connectAgent(isReconnect = false): Promise<void> {
-    if (connectingRef.current || socketRef.current) return;
+    if (connectingRef.current || socketRef.current || !credentialsReady) return;
 
-    const currentToken = tokenRef.current.trim();
     const currentEndpoint = normalizeEndpoint(endpointRef.current);
+    const currentToken = tokenRef.current.trim();
     if (!currentEndpoint || !currentToken) {
       setStatus('Disconnected');
       return;
@@ -192,14 +249,16 @@ function App() {
 
       endpointRef.current = currentEndpoint;
       setEndpoint(currentEndpoint);
+      setToken(currentToken);
 
-      if (rememberConnection || reconnectEnabled) {
-        saveConnection({ endpoint: currentEndpoint, token: currentToken });
+      if (rememberConnection || reconnectEnabledRef.current) {
+        saveEndpoint(currentEndpoint);
+        await setCredential(currentEndpoint, currentToken);
       }
 
       socketRef.current = connection;
       setSocket(connection);
-      setReconnectEnabled(true);
+      reconnectEnabledRef.current = true;
       clearReconnectTimer();
 
       connection.addListener((message) => {
@@ -219,7 +278,6 @@ function App() {
           if (payload.type === 'sessions') {
             setSessions(payload.sessions);
             sessionsRef.current = payload.sessions;
-
             setSelectedSession((current) => {
               if (current && payload.sessions.some((session) => session.sessionId === current)) {
                 return current;
@@ -247,9 +305,10 @@ function App() {
       setStatus('Disconnected');
 
       if (isUnauthorizedError(connectError)) {
-        clearSavedConnection();
+        await deleteCredential(currentEndpoint).catch(() => undefined);
+        clearSavedEndpoint();
         setRememberConnection(false);
-        setReconnectEnabled(false);
+        reconnectEnabledRef.current = false;
         setToken('');
         setError('Agent authentication failed (401). Enter a new access token.');
       } else {
@@ -264,18 +323,17 @@ function App() {
   }
 
   useEffect(() => {
-    if (!initialSavedConnection.current) return;
+    if (!initialEndpoint || !credentialsReady) return;
+    if (!token) return;
     void connectAgent(true);
-  }, []);
+  }, [credentialsReady, token]);
 
   useEffect(() => {
     const interval = setInterval(() => {
       const current = socketRef.current;
       if (!current || manualDisconnectRef.current) return;
-
       void refreshSessions(current);
     }, HEALTH_CHECK_INTERVAL_MS);
-
     return () => clearInterval(interval);
   }, []);
 
@@ -283,9 +341,7 @@ function App() {
     return () => {
       manualDisconnectRef.current = true;
       clearReconnectTimer();
-      if (remoteReconnectTimerRef.current) {
-        clearTimeout(remoteReconnectTimerRef.current);
-      }
+      if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
       void socketRef.current?.disconnect();
       rfbRef.current?.disconnect();
     };
@@ -293,7 +349,7 @@ function App() {
 
   async function disconnect() {
     manualDisconnectRef.current = true;
-    setReconnectEnabled(false);
+    reconnectEnabledRef.current = false;
     clearReconnectTimer();
 
     if (remoteReconnectTimerRef.current) {
@@ -305,7 +361,6 @@ function App() {
     rfbRef.current = null;
     setRemote(null);
     setConnectingRemote(false);
-
     await disconnectSocket();
     setIdentity(null);
     setSessions([]);
@@ -313,32 +368,35 @@ function App() {
     setStatus('Disconnected');
   }
 
-  function forgetConnection() {
-    clearSavedConnection();
+  async function forgetConnection() {
+    const currentEndpoint = normalizeEndpoint(endpointRef.current);
+    manualDisconnectRef.current = true;
+    reconnectEnabledRef.current = false;
+    clearReconnectTimer();
+    await deleteCredential(currentEndpoint).catch(() => undefined);
+    clearSavedEndpoint();
     setRememberConnection(false);
-    setReconnectEnabled(false);
     setToken('');
     setError('Saved agent connection removed.');
   }
 
-  function startRemoteSession() {
+  async function startRemoteSession() {
     const current = socketRef.current;
     const sessionId = selectedSessionRef.current;
     if (!current || !sessionId) return;
 
-    if (remoteReconnectTimerRef.current) {
-      clearTimeout(remoteReconnectTimerRef.current);
-      remoteReconnectTimerRef.current = null;
-    }
-
+    if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
     setError('');
     setConnectingRemote(true);
-    void current.send(JSON.stringify({ type: 'startSession', sessionId })).catch(() => {
+
+    try {
+      await current.send(JSON.stringify({ type: 'startSession', sessionId }));
+    } catch {
       setConnectingRemote(false);
       setError('The agent connection was lost. Reconnecting…');
-      void disconnectSocket();
+      await disconnectSocket();
       scheduleReconnect();
-    });
+    }
   }
 
   useEffect(() => {
@@ -360,34 +418,24 @@ function App() {
     rfb.viewOnly = false;
     rfb.showDotCursor = true;
 
-    rfb.addEventListener('connect', () => {
-      setError('');
-    });
-
+    rfb.addEventListener('connect', () => setError(''));
     rfb.addEventListener('disconnect', () => {
       rfbRef.current = null;
       setRemote(null);
       setConnectingRemote(false);
-
       if (manualDisconnectRef.current || !socketRef.current) return;
 
       setError('Remote desktop disconnected. Reconnecting…');
-      if (remoteReconnectTimerRef.current) {
-        clearTimeout(remoteReconnectTimerRef.current);
-      }
-
+      if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
       remoteReconnectTimerRef.current = setTimeout(() => {
         remoteReconnectTimerRef.current = null;
         const sessionId = selectedSessionRef.current;
         const stillExists = sessionsRef.current.some(
           (session) => session.sessionId === sessionId,
         );
-        if (sessionId && stillExists && socketRef.current) {
-          startRemoteSession();
-        }
+        if (sessionId && stillExists && socketRef.current) void startRemoteSession();
       }, REMOTE_RECONNECT_DELAY_MS);
     });
-
     rfb.addEventListener('securityfailure', (event) => {
       setError(`VNC authentication failed: ${event.detail.reason}`);
       setConnectingRemote(false);
@@ -398,7 +446,7 @@ function App() {
   }, [remote, endpoint, token]);
 
   const selected = sessions.find((session) => session.sessionId === selectedSession);
-  const hasSavedConnection = Boolean(loadSavedConnection());
+  const hasSavedConnection = Boolean(loadSavedEndpoint());
 
   return (
     <main className="app-shell">
@@ -436,7 +484,7 @@ function App() {
             className="connect-button"
             type="button"
             onClick={() => void connectAgent(false)}
-            disabled={!endpoint || !token || status === 'Connecting…' || status === 'Reconnecting…'}
+            disabled={!endpoint || !token || !credentialsReady || status === 'Connecting…' || status === 'Reconnecting…'}
           >
             {status === 'Reconnecting…' ? 'Reconnecting…' : 'Connect'}
           </button>
@@ -448,18 +496,24 @@ function App() {
             onChange={(event) => {
               const checked = event.target.checked;
               setRememberConnection(checked);
-              setReconnectEnabled(checked);
+              reconnectEnabledRef.current = checked;
               if (checked && token.trim()) {
-                saveConnection({ endpoint: normalizeEndpoint(endpoint), token: token.trim() });
+                const currentEndpoint = normalizeEndpoint(endpoint);
+                saveEndpoint(currentEndpoint);
+                void setCredential(currentEndpoint, token.trim()).catch((credentialError) => {
+                  setError(`Unable to save credentials: ${credentialError}`);
+                });
               } else if (!checked) {
-                clearSavedConnection();
+                const currentEndpoint = normalizeEndpoint(endpoint);
+                clearSavedEndpoint();
+                void deleteCredential(currentEndpoint).catch(() => undefined);
               }
             }}
           />
           <span>Remember</span>
         </label>
         {hasSavedConnection && !socket && (
-          <button className="secondary-button" type="button" onClick={forgetConnection}>
+          <button className="secondary-button" type="button" onClick={() => void forgetConnection()}>
             Forget
           </button>
         )}
@@ -515,13 +569,9 @@ function App() {
               className="connect-button"
               type="button"
               disabled={!selected || connectingRemote || !socket}
-              onClick={startRemoteSession}
+              onClick={() => void startRemoteSession()}
             >
-              {connectingRemote
-                ? 'Starting…'
-                : remote
-                  ? 'Reconnect desktop'
-                  : 'Start remote session'}
+              {connectingRemote ? 'Starting…' : remote ? 'Reconnect desktop' : 'Start remote session'}
             </button>
           </div>
 
