@@ -22,18 +22,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("Windows only".into());
     }
 
-    // xcap::Monitor contains native Windows handles and is not Send. Keep the
-    // monitor on a dedicated OS thread and bridge captured frames into the
-    // Tokio-owned VNC framebuffer through the runtime handle.
+    // xcap::Monitor contains native Windows handles and is not Send. The
+    // monitor must therefore be created and used on the same dedicated OS
+    // thread rather than being constructed on the Tokio thread and moved.
     let monitors = Monitor::all()?;
-    let monitor = monitors
+    let primary = monitors
         .iter()
         .find(|m| m.is_primary().unwrap_or(false))
-        .cloned()
-        .or_else(|| monitors.into_iter().next())
-        .ok_or("no display available")?;
-    let width = monitor.width()?.min(u16::MAX as u32) as u16;
-    let height = monitor.height()?.min(u16::MAX as u32) as u16;
+        .ok_or("no primary display available")?;
+    let width = primary.width()?.min(u16::MAX as u32) as u16;
+    let height = primary.height()?.min(u16::MAX as u32) as u16;
 
     let (server, mut events) = VncServer::new(
         width,
@@ -77,23 +75,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    // Keep all xcap access on the dedicated capture thread because Monitor is
-    // not Send. update_from_slice() itself remains asynchronous and is executed
-    // on the existing Tokio runtime from that thread.
+    // Create the Windows monitor object inside the capture thread. xcap 0.9.8
+    // contains HMONITOR, which is !Send, so even moving a previously-created
+    // Monitor into std::thread::spawn is invalid.
     let capture_server = server.clone();
     let runtime = tokio::runtime::Handle::current();
-    std::thread::spawn(move || loop {
-        match monitor.capture_image() {
-            Ok(image) => {
-                if let Err(error) = runtime.block_on(
-                    capture_server.framebuffer().update_from_slice(image.as_raw()),
-                ) {
-                    warn!(?error, "framebuffer update failed");
-                }
+    let session_id = args.session_id;
+    let capture_width = width;
+    let capture_height = height;
+    std::thread::spawn(move || {
+        let monitors = match Monitor::all() {
+            Ok(value) => value,
+            Err(error) => {
+                error!(session_id, ?error, "unable to enumerate monitors in capture thread");
+                return;
             }
-            Err(error) => warn!(?error, "screen capture failed"),
+        };
+        let monitor = match monitors
+            .into_iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+        {
+            Some(value) => value,
+            None => {
+                error!(session_id, "no primary display available in capture thread");
+                return;
+            }
+        };
+
+        loop {
+            match monitor.capture_image() {
+                Ok(image) => {
+                    // Capture dimensions should match the VNC framebuffer. If Windows
+                    // changes display configuration, the worker currently skips the frame;
+                    // dynamic framebuffer resize will be added with display-change handling.
+                    if image.width() == capture_width as u32 && image.height() == capture_height as u32 {
+                        if let Err(error) = runtime.block_on(
+                            capture_server.framebuffer().update_from_slice(image.as_raw()),
+                        ) {
+                            warn!(session_id, ?error, "framebuffer update failed");
+                        }
+                    } else {
+                        warn!(session_id, width=image.width(), height=image.height(), "capture dimensions changed; frame skipped");
+                    }
+                }
+                Err(error) => warn!(session_id, ?error, "screen capture failed"),
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     });
 
     server.listen(args.port).await?;
