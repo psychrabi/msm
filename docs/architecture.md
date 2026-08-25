@@ -1,44 +1,96 @@
-# Architecture
+# MSM Architecture
 
-## Principles
+## Processes
 
-1. A physical device and a user desktop session are separate resources.
-2. A session is the durable identity for remote control; VNC ports are ephemeral implementation details.
-3. The machine agent is headless and independent of the interactive Tauri application.
-4. OS-specific session discovery, desktop capture/input, and process management are isolated behind platform adapters.
-5. Prefer established Tauri plugins and mature Rust crates wherever practical.
+MSM has two independent executables:
 
-## Initial repository layout
+1. `msm` — operator desktop application built with Tauri and React.
+2. `msm-agent` — headless Rust service installed on managed computers.
 
-```text
-msm/
-├── apps/
-│   └── desktop/       # Tauri desktop application
-├── crates/
-│   ├── core/          # shared domain types and orchestration boundaries
-│   ├── rfb/           # RFB/VNC protocol integration boundary
-│   └── agent/         # machine-agent application boundary
-├── docs/
-│   └── architecture.md
-├── Cargo.toml
-├── package.json
-└── README.md
-```
+The viewer must never be required to run on a managed computer.
 
-The boundaries above are intentionally thin. They are not intended to replace mature upstream crates. When an established crate already provides a capability, MSM should use it directly rather than creating a parallel internal implementation.
-
-## Multiseat target model
+## Device and session model
 
 ```text
 Device
-└── SessionManager
-    ├── Session A -> VNC endpoint A
-    ├── Session B -> VNC endpoint B
-    └── Session C -> VNC endpoint C
+├── Seat
+│   └── Session
+│       └── VNC endpoint
+└── Seat
+    └── Session
+        └── VNC endpoint
 ```
 
-The session manager owns lifecycle and routing. A per-session VNC server may bind to a distinct local TCP port, Unix socket, named pipe, or platform-equivalent endpoint. The public API refers to the session ID, never the port.
+A session is the durable remote-control target. VNC ports, Unix sockets, named pipes, and process IDs are transient implementation details.
 
-## Future transport
+## Agent responsibilities
 
-The design should keep RFB/VNC behind a transport boundary so the management/session model can later support another remote-desktop transport without being rewritten.
+The machine agent owns:
+
+- Device identity.
+- Device authentication credentials.
+- OS session discovery.
+- Seat/session mapping.
+- Per-session VNC process lifecycle.
+- Per-session screen capture and input routing.
+- Local policy enforcement.
+- Relay connectivity when the management service is introduced.
+
+The agent must continue operating when no interactive viewer is running.
+
+## Viewer responsibilities
+
+The viewer owns:
+
+- Operator authentication.
+- Device/session browsing.
+- Remote session selection.
+- VNC rendering and operator input.
+- Connection state and diagnostics.
+
+It should not inspect or control the local machine's OS sessions as part of normal remote operation.
+
+## Transport layers
+
+The intended production path is:
+
+```text
+Viewer
+  │
+  │ authenticated secure session
+  ▼
+Relay
+  │
+  │ authenticated secure session
+  ▼
+Agent
+  │
+  │ local IPC/socket
+  ▼
+Per-session VNC server
+```
+
+The relay should remain VNC-agnostic. It routes an authenticated session without interpreting RFB framebuffer or input messages.
+
+For local development, the agent currently exposes an authenticated WebSocket control endpoint directly. This is intentionally not a production Internet transport.
+
+## VNC implementation
+
+Do not implement RFB from scratch unless the existing Rust ecosystem proves insufficient. `rustvncserver` is the current candidate for the server-side RFB implementation, while noVNC is the current candidate for the desktop viewer's VNC client.
+
+The VNC layer must be separated from OS capture/input. A VNC server instance receives framebuffer updates from the capture layer and input events are routed through the session-specific input layer.
+
+## Multiseat isolation
+
+For every session:
+
+- Capture must originate from that session's desktop.
+- Input must be injected into that session only.
+- Clipboard and file-transfer capabilities must be independently authorized.
+- A session process must not receive another user's desktop or input events.
+
+The machine-level agent may have elevated privileges, but per-session workers should run with the least privilege supported by the target OS.
+
+## Security boundary
+
+Development pairing currently uses a locally persisted bearer token. Production pairing should move to device keys/certificates and short-lived operator session credentials. The production agent connection should be outbound and authenticated, with no exposed VNC listener.
