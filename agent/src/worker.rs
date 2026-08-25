@@ -22,6 +22,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("Windows only".into());
     }
 
+    // xcap::Monitor contains native Windows handles and is not Send. Keep the
+    // monitor on a dedicated OS thread and bridge captured frames into the
+    // Tokio-owned VNC framebuffer through the runtime handle.
     let monitors = Monitor::all()?;
     let monitor = monitors
         .iter()
@@ -74,27 +77,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    // rustvncserver 2.2.1 exposes asynchronous framebuffer updates through
-    // Framebuffer::update_from_slice(). Keep capture on the Tokio runtime so
-    // the framebuffer's async locking and dirty-region notification can run.
+    // Keep all xcap access on the dedicated capture thread because Monitor is
+    // not Send. update_from_slice() itself remains asynchronous and is executed
+    // on the existing Tokio runtime from that thread.
     let capture_server = server.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
-        loop {
-            interval.tick().await;
-            match monitor.capture_image() {
-                Ok(image) => {
-                    if let Err(error) = capture_server
-                        .framebuffer()
-                        .update_from_slice(image.as_raw())
-                        .await
-                    {
-                        warn!(?error, "framebuffer update failed");
-                    }
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::spawn(move || loop {
+        match monitor.capture_image() {
+            Ok(image) => {
+                if let Err(error) = runtime.block_on(
+                    capture_server.framebuffer().update_from_slice(image.as_raw()),
+                ) {
+                    warn!(?error, "framebuffer update failed");
                 }
-                Err(error) => warn!(?error, "screen capture failed"),
             }
+            Err(error) => warn!(?error, "screen capture failed"),
         }
+        std::thread::sleep(Duration::from_millis(100));
     });
 
     server.listen(args.port).await?;
