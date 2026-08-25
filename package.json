@@ -23,9 +23,11 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.7",
     "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^22.15.30",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
+    "shadcn": "^2.1.0",
     "tailwindcss": "^4.1.7",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
