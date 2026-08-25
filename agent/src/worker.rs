@@ -2,11 +2,11 @@
 // no console window is created when the system service launches a worker.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{env, error::Error, time::Duration};
+use std::{env, error::Error, sync::mpsc, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{VncServer, server::ServerEvent};
+use rustvncserver::{server::ServerEvent, VncServer};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -22,6 +22,10 @@ struct Args {
     port: u16,
     #[arg(long)]
     password: String,
+}
+
+enum ClipboardCommand {
+    Set(String),
 }
 
 #[tokio::main]
@@ -56,6 +60,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "VNC worker starting"
     );
 
+    // Serialize clipboard reads and writes on one thread. Windows only permits
+    // one thread to have the clipboard open at a time.
+    let (clipboard_tx, clipboard_rx) = mpsc::channel::<ClipboardCommand>();
+    let clipboard_server = server.clone();
+    let clipboard_runtime = tokio::runtime::Handle::current();
+    let clipboard_session_id = args.session_id;
+    std::thread::spawn(move || {
+        let mut last_text: Option<String> = None;
+
+        loop {
+            while let Ok(command) = clipboard_rx.try_recv() {
+                match command {
+                    ClipboardCommand::Set(text) => {
+                        if let Err(error) = set_windows_clipboard(&text) {
+                            warn!(
+                                session_id = clipboard_session_id,
+                                ?error,
+                                "unable to update Windows clipboard from VNC client"
+                            );
+                        } else {
+                            last_text = Some(text);
+                        }
+                    }
+                }
+            }
+
+            if let Some(text) = get_windows_clipboard() {
+                if last_text.as_ref() != Some(&text) {
+                    if let Err(error) = clipboard_runtime
+                        .block_on(clipboard_server.send_cut_text_to_all(text.clone()))
+                    {
+                        warn!(
+                            session_id = clipboard_session_id,
+                            ?error,
+                            "unable to send Windows clipboard to VNC clients"
+                        );
+                    } else {
+                        info!(
+                            session_id = clipboard_session_id,
+                            "sent Windows clipboard to VNC clients"
+                        );
+                    }
+                    last_text = Some(text);
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+
     let event_session_id = args.session_id;
     tokio::spawn(async move {
         let mut enigo = match Enigo::new(&Settings::default()) {
@@ -89,11 +143,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 ServerEvent::CutText { text, .. } => {
-                    if let Err(error) = set_windows_clipboard(&text) {
+                    if clipboard_tx.send(ClipboardCommand::Set(text)).is_err() {
                         warn!(
                             session_id = event_session_id,
-                            ?error,
-                            "unable to update Windows clipboard from VNC client"
+                            "clipboard worker thread is no longer available"
                         );
                     }
                 }
@@ -112,34 +165,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 _ => {}
             }
-        }
-    });
-
-    // Bridge the clipboard belonging to this interactive Windows session into
-    // the VNC server. The worker runs under the logged-in user's token, so the
-    // clipboard APIs operate on that user's clipboard rather than LocalSystem.
-    let clipboard_server = server.clone();
-    let clipboard_runtime = tokio::runtime::Handle::current();
-    let clipboard_session_id = args.session_id;
-    std::thread::spawn(move || {
-        let mut last_text: Option<String> = None;
-        loop {
-            if let Some(text) = get_windows_clipboard() {
-                let changed = last_text.as_ref() != Some(&text);
-                if changed {
-                    if let Err(error) = clipboard_runtime
-                        .block_on(clipboard_server.send_cut_text_to_all(text.clone()))
-                    {
-                        warn!(
-                            session_id = clipboard_session_id,
-                            ?error,
-                            "unable to send Windows clipboard to VNC clients"
-                        );
-                    }
-                    last_text = Some(text);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(250));
         }
     });
 
@@ -299,7 +324,6 @@ fn set_windows_clipboard(text: &str) -> Result<(), Box<dyn Error + Send + Sync>>
             return Err(error.into());
         }
 
-        // Ownership transfers to the Windows clipboard after SetClipboardData.
         let _ = CloseClipboard();
     }
 
@@ -314,8 +338,8 @@ fn set_windows_clipboard(_text: &str) -> Result<(), Box<dyn Error + Send + Sync>
 #[cfg(target_os = "windows")]
 fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, mouse_event,
+        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     };
 
     let transitions = [
