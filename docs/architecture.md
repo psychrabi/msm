@@ -1,96 +1,79 @@
 # MSM Architecture
 
+## Scope
+
+MSM currently targets Windows only. Linux and macOS are intentionally out of scope until a future product decision.
+
 ## Processes
 
-MSM has two independent executables:
+MSM has two independent applications:
 
-1. `msm` — operator desktop application built with Tauri and React.
-2. `msm-agent` — headless Rust service installed on managed computers.
+1. `msm` — operator desktop application built with Tauri, React, and noVNC.
+2. `msm-agent` — headless Rust machine agent installed on managed Windows computers.
 
-The viewer must never be required to run on a managed computer.
+The agent also launches `msm-agent-worker` once for each remotely controlled Windows session.
 
-## Device and session model
+## Device and multiseat model
 
 ```text
 Device
-├── Seat
-│   └── Session
-│       └── VNC endpoint
-└── Seat
-    └── Session
-        └── VNC endpoint
+└── Agent (LocalSystem)
+    ├── Session 1 / Seat 1
+    │   └── Worker (User A token) → VNC :5901
+    ├── Session 2 / Seat 2
+    │   └── Worker (User B token) → VNC :5902
+    └── Session 3 / Seat 3
+        └── Worker (User C token) → VNC :5903
 ```
 
-A session is the durable remote-control target. VNC ports, Unix sockets, named pipes, and process IDs are transient implementation details.
+A session is the durable remote-control target. VNC ports and worker process IDs are transient implementation details.
 
-## Agent responsibilities
+## Windows session lifecycle
 
-The machine agent owns:
+The agent uses Windows Remote Desktop Services APIs to enumerate active sessions. When the viewer requests a session, the agent:
 
-- Device identity.
-- Device authentication credentials.
-- OS session discovery.
-- Seat/session mapping.
-- Per-session VNC process lifecycle.
-- Per-session screen capture and input routing.
-- Local policy enforcement.
-- Relay connectivity when the management service is introduced.
+1. Validates the session ID.
+2. Allocates a deterministic development VNC port for that session.
+3. Obtains the logged-in user's session token with `WTSQueryUserToken`.
+4. Starts `msm-agent-worker` with `CreateProcessAsUserW` and `winsta0\\default`.
+5. The worker captures the target user's desktop with `xcap`.
+6. The worker exposes the framebuffer through `rustvncserver`.
+7. The worker translates RFB input events through `enigo` inside that same user session.
+8. The agent proxies the VNC stream through its authenticated WebSocket endpoint.
 
-The agent must continue operating when no interactive viewer is running.
+This architecture is intended to prevent one user's desktop from being captured or controlled by another user's worker.
 
 ## Viewer responsibilities
 
-The viewer owns:
+The viewer owns operator interaction, device/session selection, noVNC rendering, connection state, and diagnostics. It does not need to be installed on managed computers.
 
-- Operator authentication.
-- Device/session browsing.
-- Remote session selection.
-- VNC rendering and operator input.
-- Connection state and diagnostics.
-
-It should not inspect or control the local machine's OS sessions as part of normal remote operation.
-
-## Transport layers
-
-The intended production path is:
+## Local development transport
 
 ```text
 Viewer
-  │
-  │ authenticated secure session
-  ▼
-Relay
-  │
-  │ authenticated secure session
-  ▼
-Agent
-  │
-  │ local IPC/socket
-  ▼
-Per-session VNC server
+  │ authenticated WebSocket
+  ├──────────────► Agent :40123
+  │                    │
+  │ startSession       ├──► Windows user session
+  │                    │        └── Worker → VNC
+  │                    │
+  └──── WebSocket VNC proxy ◄───┘
 ```
 
-The relay should remain VNC-agnostic. It routes an authenticated session without interpreting RFB framebuffer or input messages.
-
-For local development, the agent currently exposes an authenticated WebSocket control endpoint directly. This is intentionally not a production Internet transport.
+The development agent currently exposes the control port directly. This is suitable for LAN testing only and is not a production Internet transport.
 
 ## VNC implementation
 
-Do not implement RFB from scratch unless the existing Rust ecosystem proves insufficient. `rustvncserver` is the current candidate for the server-side RFB implementation, while noVNC is the current candidate for the desktop viewer's VNC client.
+MSM uses `rustvncserver` rather than implementing RFB itself. The viewer uses the upstream noVNC client. OS capture and input are kept outside the VNC protocol implementation.
 
-The VNC layer must be separated from OS capture/input. A VNC server instance receives framebuffer updates from the capture layer and input events are routed through the session-specific input layer.
+## Current limitations
 
-## Multiseat isolation
+- Primary-monitor capture only.
+- Fixed 10 FPS capture loop for the initial implementation.
+- Basic VNC keysym mapping.
+- No clipboard or file transfer.
+- Development bearer-token authentication only.
+- The worker/VNC port is an internal endpoint and should be firewalled from remote hosts.
+- No relay or TLS yet.
 
-For every session:
-
-- Capture must originate from that session's desktop.
-- Input must be injected into that session only.
-- Clipboard and file-transfer capabilities must be independently authorized.
-- A session process must not receive another user's desktop or input events.
-
-The machine-level agent may have elevated privileges, but per-session workers should run with the least privilege supported by the target OS.
-
-## Security boundary
-
-Development pairing currently uses a locally persisted bearer token. Production pairing should move to device keys/certificates and short-lived operator session credentials. The production agent connection should be outbound and authenticated, with no exposed VNC listener.
+These are deliberate next-stage hardening items rather than reasons to duplicate existing upstream protocol libraries.
