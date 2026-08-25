@@ -19,13 +19,6 @@ fn app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     })
 }
 
-#[tauri::command]
-fn list_sessions() -> Vec<serde_json::Value> {
-    // Session discovery belongs to the standalone agent. The viewer does not
-    // inspect the local OS and therefore remains usable as a remote console.
-    Vec::new()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -33,7 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_websocket::init())
-        .invoke_handler(tauri::generate_handler![app_info, list_sessions])
+        .invoke_handler(tauri::generate_handler![app_info])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title("MSM — Remote Monitor & Control")?;
