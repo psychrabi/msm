@@ -116,6 +116,7 @@ function App() {
   const [error, setError] = useState('');
   const [remote, setRemote] = useState<RemoteSession | null>(null);
   const [connectingRemote, setConnectingRemote] = useState(false);
+  const [viewOnly, setViewOnly] = useState(true);
   const [credentialsReady, setCredentialsReady] = useState(!initialEndpoint);
 
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -130,6 +131,7 @@ function App() {
   const reconnectEnabledRef = useRef(Boolean(initialEndpoint));
   const selectedSessionRef = useRef(selectedSession);
   const sessionsRef = useRef(sessions);
+  const remoteStartRequestedRef = useRef(false);
 
   useEffect(() => {
     endpointRef.current = endpoint;
@@ -241,6 +243,7 @@ function App() {
     manualDisconnectRef.current = false;
     setError('');
     setStatus(isReconnect ? 'Reconnecting…' : 'Connecting…');
+    remoteStartRequestedRef.current = false;
 
     try {
       const connection = await WebSocket.connect(currentEndpoint, {
@@ -290,12 +293,17 @@ function App() {
           }
 
           if (payload.type === 'remoteSession') {
+            // The agent must never open a desktop in response to connection alone.
+            // Accept a remote-session response only for an explicit user request.
+            if (!remoteStartRequestedRef.current) return;
+            remoteStartRequestedRef.current = false;
             setRemote(payload.session);
             setConnectingRemote(false);
             return;
           }
 
           if (payload.type === 'error') {
+            remoteStartRequestedRef.current = false;
             setConnectingRemote(false);
             setError(payload.message);
           }
@@ -352,6 +360,7 @@ function App() {
     manualDisconnectRef.current = true;
     reconnectEnabledRef.current = false;
     clearReconnectTimer();
+    remoteStartRequestedRef.current = false;
 
     if (remoteReconnectTimerRef.current) {
       clearTimeout(remoteReconnectTimerRef.current);
@@ -389,10 +398,12 @@ function App() {
     if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
     setError('');
     setConnectingRemote(true);
+    remoteStartRequestedRef.current = true;
 
     try {
       await current.send(JSON.stringify({ type: 'startSession', sessionId }));
     } catch {
+      remoteStartRequestedRef.current = false;
       setConnectingRemote(false);
       setError('The agent connection was lost. Reconnecting…');
       await disconnectSocket();
@@ -416,7 +427,7 @@ function App() {
     });
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
-    rfb.viewOnly = false;
+    rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
 
     rfb.addEventListener('connect', () => setError(''));
@@ -437,14 +448,14 @@ function App() {
         if (sessionId && stillExists && socketRef.current) void startRemoteSession();
       }, REMOTE_RECONNECT_DELAY_MS);
     });
-    rfb.addEventListener('securityfailure', (event) => {
+    rfb.addEventListener('securityfailure', (event: RFB.SecurityFailureEvent) => {
       setError(`VNC authentication failed: ${event.detail.reason}`);
       setConnectingRemote(false);
     });
 
     rfbRef.current = rfb;
     return () => rfb.disconnect();
-  }, [remote, endpoint, token]);
+  }, [remote, endpoint, token, viewOnly]);
 
   const selected = sessions.find((session) => session.sessionId === selectedSession);
   const hasSavedConnection = Boolean(loadSavedEndpoint());
@@ -535,6 +546,9 @@ function App() {
                 key={session.sessionId}
                 type="button"
                 onClick={() => {
+                  rfbRef.current?.disconnect();
+                  rfbRef.current = null;
+                  remoteStartRequestedRef.current = false;
                   setSelectedSession(session.sessionId);
                   setRemote(null);
                 }}
@@ -566,14 +580,24 @@ function App() {
                 {selected ? `${selected.username} · Session ${selected.sessionId}` : 'None'}
               </strong>
             </div>
-            <button
-              className="connect-button"
-              type="button"
-              disabled={!selected || connectingRemote || !socket}
-              onClick={() => void startRemoteSession()}
-            >
-              {connectingRemote ? 'Starting…' : remote ? 'Reconnect desktop' : 'Start remote session'}
-            </button>
+            <div className="viewer-actions">
+              <label className="mode-toggle">
+                <input
+                  type="checkbox"
+                  checked={viewOnly}
+                  onChange={(event) => setViewOnly(event.target.checked)}
+                />
+                <span>View only</span>
+              </label>
+              <button
+                className="connect-button"
+                type="button"
+                disabled={!selected || connectingRemote || !socket}
+                onClick={() => void startRemoteSession()}
+              >
+                {connectingRemote ? 'Starting…' : remote ? 'Reconnect desktop' : 'Start remote session'}
+              </button>
+            </div>
           </div>
 
           <div className={`viewer-surface ${remote ? 'active' : ''}`} ref={viewerRef}>
