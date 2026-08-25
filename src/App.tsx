@@ -98,20 +98,6 @@ function isUnauthorizedError(error: unknown): boolean {
   return /\b401\b|unauthorized|authentication failed|not authorized/i.test(message);
 }
 
-function deriveAgentBase(endpoint: string): URL {
-  const url = new URL(normalizeEndpoint(endpoint));
-  url.pathname = '/';
-  url.search = '';
-  return url;
-}
-
-function deriveVncUrl(endpoint: string, sessionId: string, token: string): string {
-  const url = deriveAgentBase(endpoint);
-  url.pathname = `/vnc/${sessionId}`;
-  url.search = `?token=${encodeURIComponent(token)}`;
-  return url.toString();
-}
-
 function App() {
   const initialEndpoint = loadSavedEndpoint();
   const [endpoint, setEndpoint] = useState(initialEndpoint ?? 'ws://127.0.0.1:40123/ws');
@@ -140,8 +126,6 @@ function App() {
   const selectedSessionRef = useRef(selectedSession);
   const sessionsRef = useRef(sessions);
   const remoteStartRequestedRef = useRef(false);
-  const remoteOwnerRef = useRef<symbol | null>(null);
-  const rfbGenerationRef = useRef(0);
 
   useEffect(() => { endpointRef.current = endpoint; }, [endpoint]);
   useEffect(() => { tokenRef.current = token; }, [token]);
@@ -315,17 +299,8 @@ function App() {
 
   function disconnectRemote() {
     remoteStartRequestedRef.current = false;
-    rfbGenerationRef.current += 1;
-    const rfb = rfbRef.current;
+    rfbRef.current?.disconnect();
     rfbRef.current = null;
-    if (rfb) {
-      try { rfb.disconnect(); } catch { /* Already closed. */ }
-    }
-    remoteOwnerRef.current = null;
-    const container = viewerRef.current;
-    if (container) {
-      while (container.firstChild) container.removeChild(container.firstChild);
-    }
     setRemote(null);
     setConnectingRemote(false);
   }
@@ -383,74 +358,33 @@ function App() {
 
   useEffect(() => {
     if (!remote || !viewerRef.current) return;
-    const container = viewerRef.current;
-    const generation = rfbGenerationRef.current + 1;
-    rfbGenerationRef.current = generation;
-
-    const previous = rfbRef.current;
-    rfbRef.current = null;
-    if (previous) {
-      try { previous.disconnect(); } catch { /* Already closed. */ }
-    }
-    while (container.firstChild) container.removeChild(container.firstChild);
-
-    const vncUrl = deriveVncUrl(endpoint, remote.sessionId, token);
-    let rfb: RFB;
-    try {
-      rfb = new RFB(container, vncUrl, {
-        credentials: { password: remote.vncPassword },
-      });
-    } catch (connectionError) {
-      setError(connectionError instanceof Error ? connectionError.message : 'Failed to create VNC connection');
-      setRemote(null);
-      setConnectingRemote(false);
-      return;
-    }
-
-    remoteOwnerRef.current = Symbol(remote.sessionId);
-    rfb.showDotCursor = true;
-    rfb.viewOnly = viewOnly;
+    rfbRef.current?.disconnect();
+    viewerRef.current.replaceChildren();
+    const controlEndpoint = new URL(normalizeEndpoint(endpoint));
+    controlEndpoint.pathname = `/vnc/${remote.sessionId}`;
+    controlEndpoint.search = `?token=${encodeURIComponent(token)}`;
+    controlEndpoint.protocol = controlEndpoint.protocol === 'wss:' ? 'wss:' : 'ws:';
+    const rfb = new RFB(viewerRef.current, controlEndpoint.toString(), {
+      credentials: { password: remote.vncPassword },
+    });
     rfb.scaleViewport = true;
-    rfb.resizeSession = true;
-    rfbRef.current = rfb;
-
-    rfb.addEventListener('connect', () => {
-      if (rfbRef.current !== rfb || rfbGenerationRef.current !== generation) return;
-      setError('');
-      setConnectingRemote(false);
-    });
-
+    rfb.resizeSession = false;
+    rfb.viewOnly = viewOnly;
+    rfb.showDotCursor = true;
+    rfb.addEventListener('connect', () => setError(''));
     rfb.addEventListener('disconnect', () => {
-      if (rfbRef.current !== rfb || rfbGenerationRef.current !== generation) return;
       rfbRef.current = null;
-      remoteOwnerRef.current = null;
       setRemote(null);
       setConnectingRemote(false);
+      // A remote disconnect is final. The viewer must not silently reconnect,
+      // particularly when the operator has switched to another user/session.
     });
-
     rfb.addEventListener('securityfailure', (event) => {
-      if (rfbRef.current !== rfb || rfbGenerationRef.current !== generation) return;
       setError(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`);
       setConnectingRemote(false);
     });
-
-    rfb.addEventListener('credentialsrequired', () => {
-      if (rfbRef.current !== rfb || rfbGenerationRef.current !== generation) return;
-      rfb.sendCredentials({
-        username: '',
-        password: remote.vncPassword || '',
-        target: '',
-      });
-    });
-
-    return () => {
-      if (rfbRef.current === rfb) {
-        rfbRef.current = null;
-        try { rfb.disconnect(); } catch { /* Already closed. */ }
-      }
-      while (container.firstChild) container.removeChild(container.firstChild);
-      remoteOwnerRef.current = null;
-    };
+    rfbRef.current = rfb;
+    return () => rfb.disconnect();
   }, [remote, endpoint, token, viewOnly]);
 
   const hasSavedConnection = Boolean(loadSavedEndpoint());
