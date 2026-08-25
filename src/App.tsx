@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
-import { Activity, CircleHelp, Eye, EyeOff, Monitor, Settings2, Wifi, WifiOff, X } from 'lucide-react';
+import { Activity, CircleHelp, Eye, EyeOff, Maximize2, Minimize2, Monitor, Settings2, Wifi, WifiOff, X } from 'lucide-react';
 import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
 import { Badge } from './components/ui/badge';
@@ -62,6 +62,12 @@ async function setCredential(endpoint: string, token: string) { await invoke('cr
 async function deleteCredential(endpoint: string) { await invoke('credential_delete', { key: credentialKey(endpoint) }); }
 function isUnauthorizedError(error: unknown) { return /\b401\b|unauthorized|authentication failed|not authorized/i.test(error instanceof Error ? error.message : String(error)); }
 
+function gridColumns(sessionCount: number) {
+  if (sessionCount > 12) return 'grid-cols-5';
+  if (sessionCount > 6) return 'grid-cols-4';
+  return 'grid-cols-3';
+}
+
 type RemoteViewerProps = {
   remote: RemoteConnection;
   endpoint: string;
@@ -87,12 +93,10 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     const container = containerRef.current;
     if (!container) return;
     disposingRef.current = false;
-
     const controlEndpoint = new URL(normalizeEndpoint(endpoint));
     controlEndpoint.pathname = `/vnc/${remote.sessionId}`;
     controlEndpoint.search = `token=${encodeURIComponent(token)}`;
     controlEndpoint.protocol = controlEndpoint.protocol === 'wss:' ? 'wss:' : 'ws:';
-
     container.replaceChildren();
     const rfb = new RFB(container, controlEndpoint.toString(), { credentials: { password: remote.vncPassword } });
     const clipboardRfb = rfb as RfbClipboardApi;
@@ -102,19 +106,13 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
     clipboardRfb.addEventListener('clipboard', (event) => {
-      if (navigator.clipboard) {
-        void navigator.clipboard.writeText(event.detail.text).catch(() => undefined);
-      }
+      if (navigator.clipboard) void navigator.clipboard.writeText(event.detail.text).catch(() => undefined);
     });
     rfb.addEventListener('securityfailure', (event) => onErrorRef.current(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`));
     rfb.addEventListener('disconnect', (event) => {
-      // Ignore disconnects caused by this effect's cleanup. In development React
-      // may mount/cleanup/mount an effect twice, and that local cleanup must not
-      // remove the viewer from application state.
       if (!disposingRef.current && event.detail.clean) onDisconnectRef.current();
     });
     rfbRef.current = rfb;
-
     const handlePaste = (event: ClipboardEvent) => {
       if (viewOnlyRef.current || !event.clipboardData || !rfbRef.current) return;
       const text = event.clipboardData.getData('text/plain');
@@ -123,12 +121,10 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
       (rfbRef.current as RfbClipboardApi).clipboardPasteFrom(text);
     };
     container.addEventListener('paste', handlePaste);
-
     const resizeObserver = new ResizeObserver(() => {
       if (rfbRef.current === rfb) rfb.scaleViewport = true;
     });
     resizeObserver.observe(container);
-
     return () => {
       disposingRef.current = true;
       container.removeEventListener('paste', handlePaste);
@@ -158,9 +154,10 @@ function App() {
   const [error, setError] = useState('');
   const [remoteConnections, setRemoteConnections] = useState<RemoteConnection[]>([]);
   const [connectingSessions, setConnectingSessions] = useState<Set<string>>(new Set());
-  const [viewOnly, setViewOnly] = useState(true);
   const [credentialsReady, setCredentialsReady] = useState(!initialEndpoint);
   const [activePage, setActivePage] = useState<'monitoring' | 'settings' | 'about'>('monitoring');
+  const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
+  const [fullscreenViewOnly, setFullscreenViewOnly] = useState(true);
 
   const socketRef = useRef<WebSocket | null>(null);
   const endpointRef = useRef(endpoint);
@@ -203,44 +200,28 @@ function App() {
   }, [initialEndpoint]);
 
   function clearReconnectTimer() {
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
   }
-
   async function disconnectSocket() {
     const current = socketRef.current;
     socketRef.current = null;
     setSocket(null);
-    if (current) {
-      try { await current.disconnect(); } catch { /* already closed */ }
-    }
+    if (current) { try { await current.disconnect(); } catch { /* already closed */ } }
   }
-
   function scheduleReconnect() {
     if (!reconnectEnabledRef.current || manualDisconnectRef.current || !tokenRef.current || reconnectTimerRef.current) return;
     setStatus('Reconnecting…');
-    reconnectTimerRef.current = setTimeout(() => {
-      reconnectTimerRef.current = null;
-      void connectAgent(true);
-    }, RECONNECT_DELAY_MS);
+    reconnectTimerRef.current = setTimeout(() => { reconnectTimerRef.current = null; void connectAgent(true); }, RECONNECT_DELAY_MS);
   }
-
   async function refreshSessions(connection: WebSocket) {
     try { await connection.send(JSON.stringify({ type: 'listSessions' })); }
-    catch {
-      await disconnectSocket();
-      scheduleReconnect();
-    }
+    catch { await disconnectSocket(); scheduleReconnect(); }
   }
-
   async function connectAgent(isReconnect = false): Promise<void> {
     if (connectingRef.current || socketRef.current || !credentialsReady) return;
     const currentEndpoint = normalizeEndpoint(endpointRef.current);
     const currentToken = tokenRef.current.trim();
     if (!currentEndpoint || !currentToken) { setStatus('Disconnected'); return; }
-
     connectingRef.current = true;
     manualDisconnectRef.current = false;
     setError('');
@@ -254,10 +235,7 @@ function App() {
         saveEndpoint(currentEndpoint);
         await setCredential(currentEndpoint, currentToken);
         reconnectEnabledRef.current = true;
-      } else {
-        reconnectEnabledRef.current = false;
-      }
-
+      } else reconnectEnabledRef.current = false;
       socketRef.current = connection;
       setSocket(connection);
       clearReconnectTimer();
@@ -266,25 +244,14 @@ function App() {
         try {
           const payload = JSON.parse(message.data) as AgentMessage;
           if (payload.type === 'hello') {
-            setIdentity(payload.identity);
-            setStatus('Connected');
-            setError('');
-            void refreshSessions(connection);
-            return;
+            setIdentity(payload.identity); setStatus('Connected'); setError(''); void refreshSessions(connection); return;
           }
-          if (payload.type === 'sessions') {
-            setSessions(payload.sessions);
-            return;
-          }
+          if (payload.type === 'sessions') { setSessions(payload.sessions); return; }
           if (payload.type === 'remoteSession') {
             const sessionId = payload.session.sessionId;
             if (!pendingRemoteRequestsRef.current.has(sessionId)) return;
             pendingRemoteRequestsRef.current.delete(sessionId);
-            setConnectingSessions((current) => {
-              const next = new Set(current);
-              next.delete(sessionId);
-              return next;
-            });
+            setConnectingSessions((current) => { const next = new Set(current); next.delete(sessionId); return next; });
             setRemoteConnections((current) => {
               if (current.some((item) => item.sessionId === sessionId)) return current;
               const session = sessionsRef.current.find((item) => item.sessionId === sessionId);
@@ -293,9 +260,7 @@ function App() {
             return;
           }
           if (payload.type === 'error') {
-            pendingRemoteRequestsRef.current.clear();
-            setConnectingSessions(new Set());
-            setError(payload.message);
+            pendingRemoteRequestsRef.current.clear(); setConnectingSessions(new Set()); setError(payload.message);
           }
         } catch { setError('Received an invalid message from the agent.'); }
       });
@@ -303,104 +268,56 @@ function App() {
       setStatus('Disconnected');
       if (isUnauthorizedError(connectError)) {
         await deleteCredential(currentEndpoint).catch(() => undefined);
-        clearSavedEndpoint();
-        setRememberConnection(false);
-        reconnectEnabledRef.current = false;
-        setToken('');
+        clearSavedEndpoint(); setRememberConnection(false); reconnectEnabledRef.current = false; setToken('');
         setError('Agent authentication failed (401). Enter a new access token.');
-      } else {
-        setError(connectError instanceof Error ? connectError.message : String(connectError));
-        scheduleReconnect();
-      }
-    } finally {
-      connectingRef.current = false;
-    }
+      } else { setError(connectError instanceof Error ? connectError.message : String(connectError)); scheduleReconnect(); }
+    } finally { connectingRef.current = false; }
   }
-
+  useEffect(() => { if (initialEndpoint && credentialsReady && token) void connectAgent(true); }, [credentialsReady, token]);
   useEffect(() => {
-    if (initialEndpoint && credentialsReady && token) void connectAgent(true);
-  }, [credentialsReady, token]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const current = socketRef.current;
-      if (current && !manualDisconnectRef.current) void refreshSessions(current);
-    }, HEALTH_CHECK_INTERVAL_MS);
+    const interval = setInterval(() => { const current = socketRef.current; if (current && !manualDisconnectRef.current) void refreshSessions(current); }, HEALTH_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
   }, []);
-
-  useEffect(() => () => {
-    manualDisconnectRef.current = true;
-    clearReconnectTimer();
-    void socketRef.current?.disconnect();
-  }, []);
+  useEffect(() => () => { manualDisconnectRef.current = true; clearReconnectTimer(); void socketRef.current?.disconnect(); }, []);
 
   async function disconnect() {
-    manualDisconnectRef.current = true;
-    reconnectEnabledRef.current = false;
-    clearReconnectTimer();
-    pendingRemoteRequestsRef.current.clear();
-    setConnectingSessions(new Set());
-    setRemoteConnections([]);
-    await disconnectSocket();
-    setIdentity(null);
-    setSessions([]);
-    setStatus('Disconnected');
+    manualDisconnectRef.current = true; reconnectEnabledRef.current = false; clearReconnectTimer();
+    pendingRemoteRequestsRef.current.clear(); setConnectingSessions(new Set()); setRemoteConnections([]); setFullscreenSessionId(null);
+    await disconnectSocket(); setIdentity(null); setSessions([]); setStatus('Disconnected');
   }
-
   async function forgetConnection() {
     const currentEndpoint = normalizeEndpoint(endpointRef.current);
-    manualDisconnectRef.current = true;
-    reconnectEnabledRef.current = false;
-    clearReconnectTimer();
-    await deleteCredential(currentEndpoint).catch(() => undefined);
-    clearSavedEndpoint();
-    setRememberConnection(false);
-    setToken('');
-    setError('Saved agent connection removed.');
+    manualDisconnectRef.current = true; reconnectEnabledRef.current = false; clearReconnectTimer();
+    await deleteCredential(currentEndpoint).catch(() => undefined); clearSavedEndpoint(); setRememberConnection(false); setToken(''); setError('Saved agent connection removed.');
   }
-
   async function startRemoteSession(sessionId: string) {
     const current = socketRef.current;
     if (!current || !sessionId || remoteConnections.some((item) => item.sessionId === sessionId) || pendingRemoteRequestsRef.current.has(sessionId)) return;
-    setError('');
-    pendingRemoteRequestsRef.current.add(sessionId);
-    setConnectingSessions((currentSet) => new Set(currentSet).add(sessionId));
-    try {
-      await current.send(JSON.stringify({ type: 'startSession', sessionId }));
-    } catch {
+    setError(''); pendingRemoteRequestsRef.current.add(sessionId); setConnectingSessions((currentSet) => new Set(currentSet).add(sessionId));
+    try { await current.send(JSON.stringify({ type: 'startSession', sessionId })); }
+    catch {
       pendingRemoteRequestsRef.current.delete(sessionId);
-      setConnectingSessions((currentSet) => {
-        const next = new Set(currentSet);
-        next.delete(sessionId);
-        return next;
-      });
-      setError('The agent connection was lost. Reconnecting…');
-      await disconnectSocket();
-      scheduleReconnect();
+      setConnectingSessions((currentSet) => { const next = new Set(currentSet); next.delete(sessionId); return next; });
+      setError('The agent connection was lost. Reconnecting…'); await disconnectSocket(); scheduleReconnect();
     }
   }
-
   function disconnectRemote(sessionId: string) {
     pendingRemoteRequestsRef.current.delete(sessionId);
-    setConnectingSessions((current) => {
-      const next = new Set(current);
-      next.delete(sessionId);
-      return next;
-    });
+    setConnectingSessions((current) => { const next = new Set(current); next.delete(sessionId); return next; });
     setRemoteConnections((current) => current.filter((item) => item.sessionId !== sessionId));
+    if (fullscreenSessionId === sessionId) setFullscreenSessionId(null);
   }
+  function openFullscreen(sessionId: string) { setFullscreenViewOnly(true); setFullscreenSessionId(sessionId); }
+  function closeFullscreen() { setFullscreenSessionId(null); setFullscreenViewOnly(true); }
 
   const hasSavedConnection = Boolean(loadSavedEndpoint());
   const isBusy = status === 'Connecting…' || status === 'Reconnecting…';
+  const connectedBySession = new Map(remoteConnections.map((remote) => [remote.sessionId, remote]));
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
       <header className="relative flex h-14 shrink-0 items-center justify-between border-b bg-background px-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground"><Monitor className="h-4 w-4" /></div>
-          <div className="leading-tight"><p className="text-sm font-semibold">MSM Viewer</p><p className="text-[11px] text-muted-foreground">Remote workstation management</p></div>
-        </div>
+        <div className="flex items-center gap-3"><div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground"><Monitor className="h-4 w-4" /></div><div className="leading-tight"><p className="text-sm font-semibold">MSM Viewer</p><p className="text-[11px] text-muted-foreground">Remote workstation management</p></div></div>
         <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
           <Button variant={activePage === 'monitoring' ? 'secondary' : 'ghost'} size="sm" onClick={() => setActivePage('monitoring')}><Activity className="h-4 w-4" /> Monitoring</Button>
           <Button variant={activePage === 'settings' ? 'secondary' : 'ghost'} size="sm" onClick={() => setActivePage('settings')}><Settings2 className="h-4 w-4" /> Settings</Button>
@@ -414,9 +331,9 @@ function App() {
           <div className="border-b p-4"><div className="flex items-center justify-between"><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sessions</p><p className="mt-1 font-semibold">{identity?.deviceName ?? 'No agent'}</p></div><Badge variant="outline">{sessions.length}</Badge></div></div>
           <div className="flex-1 overflow-y-auto p-2">
             {sessions.map((session) => {
-              const connected = remoteConnections.some((item) => item.sessionId === session.sessionId);
+              const connected = connectedBySession.has(session.sessionId);
               const connecting = connectingSessions.has(session.sessionId);
-              return <div key={session.sessionId} className="mb-2 rounded-lg border bg-background p-2.5"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-medium">{session.username}</p><p className="text-xs text-muted-foreground">Session {session.sessionId}</p></div><span className={cn('mt-1 h-2 w-2 shrink-0 rounded-full', session.state === 'active' ? 'bg-emerald-500' : 'bg-muted-foreground')} /></div>{connected ? <Button className="mt-2 w-full" variant="outline" size="sm" onClick={() => disconnectRemote(session.sessionId)}>Disconnect</Button> : <Button className="mt-2 w-full" size="sm" disabled={!socket || connecting} onClick={() => void startRemoteSession(session.sessionId)}>{connecting ? 'Connecting…' : 'Connect'}</Button>}</div>;
+              return <div key={session.sessionId} className="mb-2 rounded-lg border bg-background p-2.5"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-medium">{session.username}</p><p className="text-xs text-muted-foreground">Session {session.sessionId}</p></div><span className={cn('mt-1 h-2 w-2 shrink-0 rounded-full', session.state === 'active' ? 'bg-emerald-500' : 'bg-muted-foreground')} /></div><div className="mt-2 text-xs text-muted-foreground">{connecting ? 'Connecting…' : connected ? 'Viewer connected' : 'Viewer not connected'}</div></div>;
             })}
             {!sessions.length && <div className="p-4 text-center text-sm text-muted-foreground">{socket ? 'No active user sessions.' : 'Connect to an MSM agent.'}</div>}
           </div>
@@ -425,16 +342,35 @@ function App() {
 
         <main className="min-w-0 flex-1 overflow-auto">
           <div className="flex min-h-full flex-col">
-            <div className="border-b px-5 py-4"><div className="flex items-center justify-between gap-4"><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monitoring</p><h1 className="mt-1 text-xl font-semibold">Remote viewers</h1><p className="mt-1 text-sm text-muted-foreground">Connect individual sessions from the list. Sessions are never opened automatically.</p></div><Label className="flex shrink-0 items-center gap-2 text-sm"><Checkbox checked={viewOnly} onCheckedChange={(checked) => setViewOnly(checked === true)} />{viewOnly ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />} View only</Label></div></div>
+            <div className="border-b px-5 py-4"><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monitoring</p><h1 className="mt-1 text-xl font-semibold">Remote viewers</h1><p className="mt-1 text-sm text-muted-foreground">Connect individual sessions from their viewer cards. Sessions are never opened automatically.</p></div></div>
             {error && <div className="border-b bg-destructive/10 px-5 py-2.5 text-sm text-destructive">{error}</div>}
             <section className="flex-1 p-5">
-              {remoteConnections.length === 0 ? <div className="flex min-h-[360px] items-center justify-center rounded-xl border bg-muted/10 text-center"><div><Monitor className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" /><p className="text-sm font-medium">No remote viewers connected</p><p className="mt-1 text-xs text-muted-foreground">Choose a session from the list on the left.</p></div></div> : <div className="grid auto-rows-[minmax(260px,1fr)] gap-4 sm:grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">{remoteConnections.map((remote) => <Card key={remote.sessionId} className="flex min-h-0 flex-col overflow-hidden"><CardHeader className="flex-row items-center justify-between space-y-0 border-b px-4 py-3"><div className="min-w-0"><CardTitle className="truncate text-sm">{remote.username}</CardTitle><p className="text-xs text-muted-foreground">Session {remote.sessionId}</p></div><Button variant="ghost" size="icon" aria-label={`Disconnect ${remote.username}`} onClick={() => disconnectRemote(remote.sessionId)}><X className="h-4 w-4" /></Button></CardHeader><CardContent className="relative min-h-0 flex-1 bg-zinc-950 p-0"><RemoteViewer remote={remote} endpoint={endpoint} token={token} viewOnly={viewOnly} onDisconnect={() => disconnectRemote(remote.sessionId)} onError={setError} /></CardContent></Card>)}</div>}
+              {sessions.length === 0 ? <div className="flex min-h-[360px] items-center justify-center rounded-xl border bg-muted/10 text-center"><div><Monitor className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" /><p className="text-sm font-medium">No remote sessions available</p><p className="mt-1 text-xs text-muted-foreground">Active Windows sessions will appear here.</p></div></div> : <div className={cn('grid auto-rows-[minmax(190px,1fr)] gap-4', gridColumns(sessions.length))}>
+                {sessions.map((session) => {
+                  const remote = connectedBySession.get(session.sessionId);
+                  const connecting = connectingSessions.has(session.sessionId);
+                  const isFullscreen = fullscreenSessionId === session.sessionId;
+                  return <Card key={session.sessionId} className={cn('flex min-h-0 flex-col overflow-hidden', isFullscreen && 'fixed inset-0 z-50 m-0 rounded-none border-0')}>
+                    <CardHeader className="flex-row items-center justify-between space-y-0 border-b px-3 py-2">
+                      <div className="min-w-0"><CardTitle className="truncate text-sm">{session.username}</CardTitle><p className="text-[11px] text-muted-foreground">Session {session.sessionId}</p></div>
+                      <div className="flex items-center gap-1">
+                        {remote && <Button variant="ghost" size="icon" aria-label={`Fullscreen ${session.username}`} onClick={() => openFullscreen(session.sessionId)}>{isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</Button>}
+                        {remote && <Button variant="ghost" size="icon" aria-label={`Disconnect ${session.username}`} onClick={() => disconnectRemote(session.sessionId)}><X className="h-4 w-4" /></Button>}
+                      </div>
+                    </CardHeader>
+                    <CardContent className={cn('relative min-h-0 flex-1 bg-black p-0', isFullscreen && 'rounded-none')}>
+                      {remote ? <RemoteViewer remote={remote} endpoint={endpoint} token={token} viewOnly={isFullscreen ? fullscreenViewOnly : true} onDisconnect={() => disconnectRemote(session.sessionId)} onError={setError} /> : <div className="flex h-full min-h-[150px] items-center justify-center bg-black"><div className="text-center"><Monitor className="mx-auto mb-2 h-7 w-7 text-zinc-600" /><p className="text-xs text-zinc-400">Not connected</p><Button className="mt-3" size="sm" disabled={!socket || connecting} onClick={() => void startRemoteSession(session.sessionId)}>{connecting ? 'Connecting…' : 'Connect'}</Button></div></div>}
+                    </CardContent>
+                    {isFullscreen && remote && <div className="absolute bottom-0 left-0 right-0 z-[60] flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur"><div className="text-sm"><span className="font-medium">{session.username}</span><span className="ml-2 text-muted-foreground">Session {session.sessionId}</span></div><div className="flex items-center gap-3"><Label className="flex items-center gap-2 text-sm"><Checkbox checked={fullscreenViewOnly} onCheckedChange={(checked: boolean | 'indeterminate') => setFullscreenViewOnly(checked === true)} />{fullscreenViewOnly ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />} View only</Label><Button variant="outline" size="sm" onClick={closeFullscreen}><Minimize2 className="h-4 w-4" /> Exit fullscreen</Button><Button variant="outline" size="sm" onClick={() => disconnectRemote(session.sessionId)}><X className="h-4 w-4" /> Disconnect</Button></div></div>}
+                  </Card>;
+                })}
+              </div>}
             </section>
           </div>
         </main>
       </div>}
 
-      {activePage === 'settings' && <main className="flex-1 overflow-auto"><div className="mx-auto max-w-3xl p-6"><div className="mb-6"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings</p><h1 className="mt-1 text-2xl font-semibold">Connection</h1><p className="mt-1 text-sm text-muted-foreground">Manage the saved agent endpoint and authentication credential.</p></div><Card><CardHeader><CardTitle>Agent connection</CardTitle></CardHeader><CardContent className="space-y-4"><div className="space-y-2"><Label htmlFor="settings-endpoint">Endpoint</Label><Input id="settings-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={Boolean(socket)} /></div><div className="space-y-2"><Label htmlFor="settings-token">Access token</Label><Input id="settings-token" value={token} onChange={(event) => setToken(event.target.value)} type="password" disabled={Boolean(socket)} /></div><div className="flex items-center justify-between rounded-lg border p-3"><Label className="flex items-center gap-2"><Checkbox checked={rememberConnection} onCheckedChange={(checked) => setRememberConnection(checked === true)} /> Remember this connection</Label>{hasSavedConnection && <Button variant="outline" size="sm" onClick={() => void forgetConnection()}>Forget saved credential</Button>}</div><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => void disconnect()} disabled={!socket}>Disconnect</Button><Button onClick={() => void connectAgent(false)} disabled={Boolean(socket) || !endpoint || !token || !credentialsReady}>{isBusy ? 'Connecting…' : 'Connect'}</Button></div></CardContent></Card></div></main>}
+      {activePage === 'settings' && <main className="flex-1 overflow-auto"><div className="mx-auto max-w-3xl p-6"><div className="mb-6"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings</p><h1 className="mt-1 text-2xl font-semibold">Connection</h1><p className="mt-1 text-sm text-muted-foreground">Manage the saved agent endpoint and authentication credential.</p></div><Card><CardHeader><CardTitle>Agent connection</CardTitle></CardHeader><CardContent className="space-y-4"><div className="space-y-2"><Label htmlFor="settings-endpoint">Endpoint</Label><Input id="settings-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={Boolean(socket)} /></div><div className="space-y-2"><Label htmlFor="settings-token">Access token</Label><Input id="settings-token" value={token} onChange={(event) => setToken(event.target.value)} type="password" disabled={Boolean(socket)} /></div><div className="flex items-center justify-between rounded-lg border p-3"><Label className="flex items-center gap-2"><Checkbox checked={rememberConnection} onCheckedChange={(checked: boolean | 'indeterminate') => setRememberConnection(checked === true)} /> Remember this connection</Label>{hasSavedConnection && <Button variant="outline" size="sm" onClick={() => void forgetConnection()}>Forget saved credential</Button>}</div><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => void disconnect()} disabled={!socket}>Disconnect</Button><Button onClick={() => void connectAgent(false)} disabled={Boolean(socket) || !endpoint || !token || !credentialsReady}>{isBusy ? 'Connecting…' : 'Connect'}</Button></div></CardContent></Card></div></main>}
       {activePage === 'about' && <main className="flex flex-1 items-center justify-center p-6"><Card className="w-full max-w-2xl"><CardHeader><CardTitle>MSM Viewer</CardTitle></CardHeader><CardContent className="grid gap-3 text-sm"><div className="flex justify-between border-b pb-3"><span className="text-muted-foreground">Agent</span><span>{identity?.deviceName ?? 'Not connected'}</span></div><div className="flex justify-between border-b pb-3"><span className="text-muted-foreground">Platform</span><span>{identity?.platform ?? '—'}</span></div><div className="flex justify-between"><span className="text-muted-foreground">Version</span><span>{identity?.agentVersion ?? '—'}</span></div></CardContent></Card></main>}
     </div>
   );
