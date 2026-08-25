@@ -1,0 +1,14 @@
+[Unit]
+Description=MSM Remote Monitor Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/msm-agent --listen 127.0.0.1:40123
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
