@@ -1,6 +1,6 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, time::Duration};
 
-use tokio::{net::TcpStream, sync::Mutex, time::sleep};
+use tokio::{net::TcpStream, time::sleep};
 use tracing::{info, warn};
 
 use crate::{
@@ -21,19 +21,32 @@ pub async fn run(state: AppState) {
     }
 }
 
-pub async fn ensure_session(state: &AppState, session_id: u32) -> Result<RemoteSession, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn ensure_session(
+    state: &AppState,
+    session_id: u32,
+) -> Result<RemoteSession, Box<dyn std::error::Error + Send + Sync>> {
+    let _operation = state.worker_operations.lock().await;
+
     if let Some(existing) = state.workers.lock().await.get(&session_id).cloned() {
         if TcpStream::connect(("127.0.0.1", existing.port)).await.is_ok() {
             return Ok(existing);
         }
 
-        warn!(session_id, port = existing.port, "VNC worker stopped responding; restarting");
+        warn!(
+            session_id,
+            port = existing.port,
+            "VNC worker stopped responding; restarting"
+        );
         terminate_worker(existing.worker_pid);
         state.workers.lock().await.remove(&session_id);
     }
 
-    let port = allocate_worker_port(&state.workers.lock().await, FIRST_VNC_PORT)
-        .ok_or_else(|| "no available VNC worker ports".to_string())?;
+    let port = {
+        let workers = state.workers.lock().await;
+        allocate_worker_port(&workers, FIRST_VNC_PORT)
+    }
+    .ok_or_else(|| "no available VNC worker ports".to_string())?;
+
     let password = state.auth_token.chars().take(8).collect::<String>();
     let worker_pid = spawn_worker(session_id, port, &password)?;
 
@@ -46,14 +59,20 @@ pub async fn ensure_session(state: &AppState, session_id: u32) -> Result<RemoteS
                 vnc_password: password,
                 worker_pid,
             };
-            state.workers.lock().await.insert(session_id, session.clone());
+            state
+                .workers
+                .lock()
+                .await
+                .insert(session_id, session.clone());
             info!(session_id, worker_pid, port, "VNC worker ready");
             return Ok(session);
         }
 
         if tokio::time::Instant::now() >= deadline {
             terminate_worker(worker_pid);
-            return Err(format!("VNC worker for session {session_id} did not become ready").into());
+            return Err(
+                format!("VNC worker for session {session_id} did not become ready").into(),
+            );
         }
         sleep(WORKER_READY_POLL).await;
     }
