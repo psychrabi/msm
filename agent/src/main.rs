@@ -314,9 +314,11 @@ async fn discover_windows_sessions() -> Vec<SessionInfo> {
 #[cfg(windows)]
 fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
     use windows::Win32::System::RemoteDesktop::{
-        WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSActive, WTSEnumerateSessionsW,
-        WTSFreeMemory,
+        WTS_CURRENT_SERVER_HANDLE, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
+        WTS_SESSION_INFOW, WTSEnumerateSessionsW,
     };
+    use windows::core::PWSTR;
+
     unsafe {
         let mut sessions_ptr: *mut WTS_SESSION_INFOW = std::ptr::null_mut();
         let mut count = 0u32;
@@ -327,14 +329,43 @@ fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Se
             &mut sessions_ptr,
             &mut count,
         )?;
+
+        if sessions_ptr.is_null() {
+            return Ok(Vec::new());
+        }
+
         let sessions = std::slice::from_raw_parts(sessions_ptr, count as usize);
         let mut result = Vec::new();
         for session in sessions {
-            if session.State != WTSActive {
+            if session.SessionId == 0 {
                 continue;
             }
+
             let id = session.SessionId;
-            let username = query_username(id).unwrap_or_else(|| "unknown".to_owned());
+            let mut buffer = PWSTR(std::ptr::null_mut());
+            let mut bytes = 0u32;
+            if WTSQuerySessionInformationW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                id,
+                WTSUserName,
+                &mut buffer,
+                &mut bytes,
+            )
+            .is_err()
+                || buffer.is_null()
+            {
+                continue;
+            }
+
+            let chars =
+                std::slice::from_raw_parts(buffer.as_ptr(), (bytes as usize / 2).saturating_sub(1));
+            let username = String::from_utf16_lossy(chars);
+            WTSFreeMemory(buffer.as_ptr() as _);
+
+            if username.trim().is_empty() || username.eq_ignore_ascii_case("system") {
+                continue;
+            }
+
             result.push(SessionInfo {
                 session_id: id.to_string(),
                 username,
@@ -345,33 +376,6 @@ fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Se
         }
         WTSFreeMemory(sessions_ptr as _);
         Ok(result)
-    }
-}
-
-#[cfg(windows)]
-fn query_username(session_id: u32) -> Option<String> {
-    use windows::{
-        Win32::System::RemoteDesktop::{
-            WTS_CURRENT_SERVER_HANDLE, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
-        },
-        core::PWSTR,
-    };
-    unsafe {
-        let mut buffer = PWSTR(std::ptr::null_mut());
-        let mut bytes = 0u32;
-        WTSQuerySessionInformationW(
-            Some(WTS_CURRENT_SERVER_HANDLE),
-            session_id,
-            WTSUserName,
-            &mut buffer,
-            &mut bytes,
-        )
-        .ok()?;
-        let chars =
-            std::slice::from_raw_parts(buffer.as_ptr(), (bytes as usize / 2).saturating_sub(1));
-        let name = String::from_utf16_lossy(chars);
-        WTSFreeMemory(buffer.as_ptr() as _);
-        Some(name)
     }
 }
 
@@ -495,7 +499,7 @@ async fn build_app() -> Result<(Router, DeviceIdentity), Box<dyn std::error::Err
         .route("/ws", any(websocket))
         .route("/vnc/{session_id}", any(vnc_websocket))
         .with_state(state.clone());
-    tokio::spawn(session_supervisor::run(state));
+    session_supervisor::start(state);
     Ok((app, identity))
 }
 
@@ -607,8 +611,7 @@ fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    let service_manager =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service_manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = service_manager.open_service(
         SERVICE_NAME,
         ServiceAccess::START | ServiceAccess::QUERY_STATUS,
@@ -624,8 +627,7 @@ fn stop_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
-    let service_manager =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service_manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = service_manager.open_service(
         SERVICE_NAME,
         ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
@@ -766,61 +768,59 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
     Ok(())
 }
 
-#[cfg(windows)]
-fn run_service_entrypoint() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_as_windows_service()
+#[cfg(not(windows))]
+fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Windows only".into())
 }
 
-fn run_normal(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(run_server(
-        args.listen,
-        async {
-            let _ = signal::ctrl_c().await;
-            warn!("shutdown requested")
-        },
-        None,
-    ))
+#[cfg(not(windows))]
+fn uninstall_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Windows only".into())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
+#[cfg(not(windows))]
+fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Windows only".into())
+}
+
+#[cfg(not(windows))]
+fn stop_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Windows only".into())
+}
+
+#[cfg(not(windows))]
+fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Windows only".into())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     if args.print_identity {
         let identity = load_or_create_identity()?;
-        let auth_token = load_or_create_token()?;
+        let token = load_or_create_token()?;
         println!("{}", serde_json::to_string_pretty(&identity)?);
-        println!("access_token={auth_token}");
+        println!("access_token={token}");
         return Ok(());
     }
-    #[cfg(windows)]
-    {
-        if args.install_service {
-            return install_windows_service();
-        }
-        if args.uninstall_service {
-            return uninstall_windows_service();
-        }
-        if args.start_service {
-            return start_windows_service();
-        }
-        if args.stop_service {
-            return stop_windows_service();
-        }
-        if args.run_service {
-            return run_service_entrypoint();
-        }
+    if args.install_service {
+        return install_windows_service();
     }
-    #[cfg(not(windows))]
-    if args.install_service
-        || args.uninstall_service
-        || args.start_service
-        || args.stop_service
-        || args.run_service
-    {
-        return Err("Windows service management is only supported on Windows".into());
+    if args.uninstall_service {
+        return uninstall_windows_service();
     }
-    run_normal(args)
+    if args.start_service {
+        return start_windows_service();
+    }
+    if args.stop_service {
+        return stop_windows_service();
+    }
+    if args.run_service {
+        return run_as_windows_service();
+    }
+
+    let shutdown = async {
+        let _ = signal::ctrl_c().await;
+    };
+    run_server(args.listen, shutdown, None).await
 }
