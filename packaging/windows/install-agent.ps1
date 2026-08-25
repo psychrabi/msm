@@ -22,33 +22,121 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $InstalledAgent = Join-Path $InstallDir $AgentName
 $InstalledWorker = Join-Path $InstallDir $WorkerName
 
-# Service registration and lifecycle are owned by the Rust agent through the
-# windows-service crate. This keeps SCM registration identical to the service
-# implementation used by the agent itself.
-if (Test-Path -LiteralPath $InstalledAgent -PathType Leaf) {
-    $ExistingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($ExistingService -and $ExistingService.Status -ne "Stopped") {
-        & $InstalledAgent --stop-service 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "MSM Agent service stop failed (exit code $LASTEXITCODE)."
+function Stop-MsmWorkers {
+    $workers = @(Get-Process -Name "msm-agent-worker" -ErrorAction SilentlyContinue)
+    if (-not $workers) {
+        return
+    }
+
+    Write-Host "Stopping $($workers.Count) MSM worker process(es)..."
+    foreach ($worker in $workers) {
+        try {
+            Stop-Process -Id $worker.Id -Force -ErrorAction Stop
+        }
+        catch {
+            if (Get-Process -Id $worker.Id -ErrorAction SilentlyContinue) {
+                throw "Unable to terminate MSM worker PID $($worker.Id): $($_.Exception.Message)"
+            }
         }
     }
 
-    if ($ExistingService) {
-        & $InstalledAgent --uninstall-service 2>$null
-
-        $UninstallExitCode = $LASTEXITCODE
-
-        $ServiceStillExists = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-
-        if ($ServiceStillExists) {
-            throw "MSM Agent service uninstall failed (exit code $UninstallExitCode)."
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $remaining = @(Get-Process -Name "msm-agent-worker" -ErrorAction SilentlyContinue)
+        if (-not $remaining) {
+            return
         }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $remainingIds = @($remaining | ForEach-Object { $_.Id }) -join ", "
+    throw "MSM worker process(es) are still running: $remainingIds"
+}
+
+function Stop-MsmServiceAndWait {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        return
+    }
+
+    if ($service.Status -ne "Stopped") {
+        Write-Host "Stopping $ServiceName service..."
+        try {
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        }
+        catch {
+            # The service may already be transitioning to stopped. The status wait below
+            # is authoritative; only fail if it never reaches Stopped.
+            Write-Warning "Stop-Service reported: $($_.Exception.Message)"
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(20)
+    do {
+        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $service -or $service.Status -eq "Stopped") {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $state = if ($service) { $service.Status } else { "Unknown" }
+    throw "$ServiceName did not stop within 20 seconds. Current state: $state"
+}
+
+function Uninstall-MsmServiceAndWait {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        return
+    }
+
+    # First use the same service implementation as normal installation. The command
+    # returns success once SCM accepts the delete request, not necessarily once the
+    # service object has disappeared, so we explicitly wait for disappearance.
+    Write-Host "Uninstalling $ServiceName service..."
+    & $InstalledAgent --uninstall-service 2>$null
+    $uninstallExitCode = $LASTEXITCODE
+
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $remaining = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $remaining) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    # Windows can leave a service in DELETE_PENDING while an SCM handle is still open.
+    # If it is still registered after the normal uninstall command, issue the SCM delete
+    # directly and wait again rather than reporting a false failure for exit code 0.
+    Write-Warning "$ServiceName is still registered after --uninstall-service (exit code $uninstallExitCode). Retrying through SCM..."
+    & sc.exe delete $ServiceName | Out-Null
+    $scExitCode = $LASTEXITCODE
+
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $remaining = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $remaining) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    if ($remaining) {
+        throw "MSM Agent service uninstall failed (service still exists after SCM delete; --uninstall-service exit code $uninstallExitCode, sc.exe exit code $scExitCode)."
     }
 }
 
-Start-Sleep -Milliseconds 500
+# Reinstallation must be safe while the previous service has active per-session
+# workers. Terminate workers first so no old VNC worker remains attached to a user
+# session while the service is being replaced.
+Stop-MsmWorkers
+Stop-MsmServiceAndWait
+Uninstall-MsmServiceAndWait
+Stop-MsmWorkers
 
+# At this point the old service and workers are gone, so the binaries can be replaced.
+Start-Sleep -Milliseconds 500
 Copy-Item -LiteralPath $AgentBinaryPath -Destination $InstalledAgent -Force
 Copy-Item -LiteralPath $WorkerBinaryPath -Destination $InstalledWorker -Force
 
@@ -93,8 +181,18 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSM Agent service start failed (exit code $LASTEXITCODE)."
 }
 
-Start-Sleep -Milliseconds 500
-$Service = Get-Service -Name $ServiceName -ErrorAction Stop
+$deadline = (Get-Date).AddSeconds(20)
+do {
+    $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($Service -and $Service.Status -eq "Running") {
+        break
+    }
+    Start-Sleep -Milliseconds 250
+} while ((Get-Date) -lt $deadline)
+
+if (-not $Service) {
+    throw "$ServiceName was installed but is no longer registered."
+}
 if ($Service.Status -ne "Running") {
     throw "$ServiceName was installed but failed to reach Running state. Current state: $($Service.Status)"
 }
