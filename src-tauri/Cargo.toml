@@ -20,6 +20,7 @@ tauri-plugin-os = "2"
 tauri-plugin-process = "2"
 tauri-plugin-websocket = "2"
 keyring = { version = "3", features = ["windows-native"] }
+arboard = "3.6.1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
