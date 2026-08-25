@@ -12,9 +12,40 @@ type AgentMessage =
   | { type: 'remoteSession'; session: RemoteSession }
   | { type: 'error'; message: string };
 
+type SavedConnection = {
+  endpoint: string;
+  token: string;
+};
+
+const SAVED_CONNECTION_KEY = 'msm.saved-agent-connection';
+
+function loadSavedConnection(): SavedConnection | null {
+  try {
+    const raw = localStorage.getItem(SAVED_CONNECTION_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as Partial<SavedConnection>;
+    if (typeof saved.endpoint !== 'string' || typeof saved.token !== 'string' || !saved.endpoint || !saved.token) {
+      return null;
+    }
+    return { endpoint: saved.endpoint, token: saved.token };
+  } catch {
+    return null;
+  }
+}
+
+function saveConnection(connection: SavedConnection) {
+  localStorage.setItem(SAVED_CONNECTION_KEY, JSON.stringify(connection));
+}
+
+function clearSavedConnection() {
+  localStorage.removeItem(SAVED_CONNECTION_KEY);
+}
+
 function App() {
-  const [endpoint, setEndpoint] = useState('ws://127.0.0.1:40123/ws');
-  const [token, setToken] = useState('');
+  const savedConnection = useRef(loadSavedConnection());
+  const [endpoint, setEndpoint] = useState(savedConnection.current?.endpoint ?? 'ws://127.0.0.1:40123/ws');
+  const [token, setToken] = useState(savedConnection.current?.token ?? '');
+  const [rememberConnection, setRememberConnection] = useState(Boolean(savedConnection.current));
   const [socket, setSocket] = useState<WebSocket | null>(null);
   const [identity, setIdentity] = useState<DeviceIdentity | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -25,17 +56,23 @@ function App() {
   const [connectingRemote, setConnectingRemote] = useState(false);
   const viewerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
+  const autoConnectAttempted = useRef(false);
 
   useEffect(() => () => {
     void socket?.disconnect();
     rfbRef.current?.disconnect();
   }, [socket]);
 
-  async function connect() {
+  async function connect(saved = false) {
     setError('');
     setStatus('Connecting…');
     try {
       const connection = await WebSocket.connect(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+      if (rememberConnection) {
+        saveConnection({ endpoint, token });
+      } else if (!saved) {
+        clearSavedConnection();
+      }
       connection.addListener((message) => {
         if (message.type !== 'Text') return;
         try {
@@ -65,6 +102,12 @@ function App() {
     }
   }
 
+  useEffect(() => {
+    if (autoConnectAttempted.current || !savedConnection.current) return;
+    autoConnectAttempted.current = true;
+    void connect(true);
+  }, []);
+
   async function disconnect() {
     rfbRef.current?.disconnect();
     rfbRef.current = null;
@@ -75,6 +118,12 @@ function App() {
     setSelectedSession(null);
     setRemote(null);
     setStatus('Disconnected');
+  }
+
+  function forgetConnection() {
+    clearSavedConnection();
+    setRememberConnection(false);
+    setToken('');
   }
 
   function startRemoteSession() {
@@ -115,6 +164,14 @@ function App() {
         <input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="ws://host:40123/ws" />
         <input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Agent access token" type="password" />
         {socket ? <button className="secondary-button" type="button" onClick={() => void disconnect()}>Disconnect</button> : <button className="connect-button" type="button" onClick={() => void connect()} disabled={!endpoint || !token}>Connect</button>}
+        <label className="remember-connection">
+          <input type="checkbox" checked={rememberConnection} onChange={(event) => {
+            setRememberConnection(event.target.checked);
+            if (!event.target.checked) clearSavedConnection();
+          }} />
+          <span>Remember</span>
+        </label>
+        {savedConnection.current && !socket && <button className="secondary-button" type="button" onClick={forgetConnection}>Forget</button>}
       </section>
       {error && <div className="error-banner">{error}</div>}
       <section className="workspace">
