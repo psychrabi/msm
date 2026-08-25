@@ -44,17 +44,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         while let Some(event) = events.recv().await {
             match event {
-                ServerEvent::PointerEvent { x, y, button_mask, .. } => {
+                ServerEvent::PointerMove { x, y, button_mask, .. } => {
                     let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
                     apply_buttons(&mut enigo, button_mask);
                 }
-                ServerEvent::KeyEvent { key, pressed, .. } => {
+                ServerEvent::KeyPress { down, key, .. } => {
                     if let Some(mapped) = map_keysym(key) {
-                        let direction = if pressed { Direction::Press } else { Direction::Release };
+                        let direction = if down { Direction::Press } else { Direction::Release };
                         let _ = enigo.key(mapped, direction);
                     } else { warn!(key, "unmapped VNC key symbol"); }
                 }
-                ServerEvent::ClientConnected { client_id } => info!(session_id=args.session_id, client_id, "VNC client connected"),
+                ServerEvent::ClientConnected { client_id, .. } => info!(session_id=args.session_id, client_id, "VNC client connected"),
                 ServerEvent::ClientDisconnected { .. } => {}
                 _ => {}
             }
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(image) => {
                 let w = image.width().min(u16::MAX as u32) as u16;
                 let h = image.height().min(u16::MAX as u32) as u16;
-                capture_server.update_framebuffer(image.as_raw(), 0, 0, w, h);
+                capture_server.framebuffer_mut().update(image.as_raw(), 0, 0, w, h);
             }
             Err(error) => warn!(?error, "screen capture failed"),
         }
