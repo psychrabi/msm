@@ -71,9 +71,11 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const disposingRef = useRef(false);
+  const viewOnlyRef = useRef(viewOnly);
   const onDisconnectRef = useRef(onDisconnect);
   const onErrorRef = useRef(onError);
 
+  useEffect(() => { viewOnlyRef.current = viewOnly; }, [viewOnly]);
   useEffect(() => { onDisconnectRef.current = onDisconnect; }, [onDisconnect]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
@@ -94,6 +96,11 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
+    rfb.addEventListener('clipboard', (event) => {
+      if (navigator.clipboard) {
+        void navigator.clipboard.writeText(event.detail.text).catch(() => undefined);
+      }
+    });
     rfb.addEventListener('securityfailure', (event) => onErrorRef.current(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`));
     rfb.addEventListener('disconnect', (event) => {
       // Ignore disconnects caused by this effect's cleanup. In development React
@@ -103,6 +110,15 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
     });
     rfbRef.current = rfb;
 
+    const handlePaste = (event: ClipboardEvent) => {
+      if (viewOnlyRef.current || !event.clipboardData || !rfbRef.current) return;
+      const text = event.clipboardData.getData('text/plain');
+      if (!text) return;
+      event.preventDefault();
+      rfb.clipboardPasteFrom(text);
+    };
+    container.addEventListener('paste', handlePaste);
+
     const resizeObserver = new ResizeObserver(() => {
       if (rfbRef.current === rfb) rfb.scaleViewport = true;
     });
@@ -110,6 +126,7 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
 
     return () => {
       disposingRef.current = true;
+      container.removeEventListener('paste', handlePaste);
       resizeObserver.disconnect();
       if (rfbRef.current === rfb) rfbRef.current = null;
       try { rfb.disconnect(); } catch { /* already disconnected */ }
