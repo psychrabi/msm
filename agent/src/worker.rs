@@ -13,6 +13,8 @@ struct Args {
     session_id: u32,
     #[arg(long)]
     port: u16,
+    #[arg(long)]
+    password: String,
 }
 
 #[tokio::main]
@@ -27,7 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let width = monitor.width()?.min(u16::MAX as u32) as u16;
     let height = monitor.height()?.min(u16::MAX as u32) as u16;
     let server = std::sync::Arc::new(VncServer::new(width, height));
-    server.set_password(Some(random_vnc_password()));
+    server.set_password(Some(args.password.clone()));
     let mut events = server.events();
 
     info!(session_id=args.session_id, port=args.port, width, height, "VNC worker starting");
@@ -74,8 +76,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     server.listen(args.port).await?;
     Ok(())
 }
-
-fn random_vnc_password() -> String { uuid::Uuid::new_v4().simple().to_string()[..8].to_owned() }
 
 fn apply_buttons(enigo: &mut Enigo, mask: u8) {
     for (bit, button) in [(1u8, Button::Left), (2u8, Button::Middle), (4u8, Button::Right)] {
