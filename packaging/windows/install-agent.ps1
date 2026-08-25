@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $InstallDir = Join-Path $env:ProgramFiles "MSM"
 $AgentName = "msm-agent.exe"
 $WorkerName = "msm-agent-worker.exe"
+$ServiceName = "MSMAgent"
 
 if (-not (Test-Path -LiteralPath $AgentBinaryPath -PathType Leaf)) {
     throw "Agent binary not found: $AgentBinaryPath"
@@ -25,8 +26,20 @@ $InstalledWorker = Join-Path $InstallDir $WorkerName
 # windows-service crate. This keeps SCM registration identical to the service
 # implementation used by the agent itself.
 if (Test-Path -LiteralPath $InstalledAgent -PathType Leaf) {
-    & $InstalledAgent --stop-service 2>$null
-    & $InstalledAgent --uninstall-service 2>$null
+    $ExistingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($ExistingService -and $ExistingService.Status -ne "Stopped") {
+        & $InstalledAgent --stop-service 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "MSM Agent service stop failed (exit code $LASTEXITCODE)."
+        }
+    }
+
+    if ($ExistingService) {
+        & $InstalledAgent --uninstall-service 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "MSM Agent service uninstall failed (exit code $LASTEXITCODE)."
+        }
+    }
 }
 
 Start-Sleep -Milliseconds 500
@@ -39,15 +52,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSM Agent service installation failed (exit code $LASTEXITCODE)."
 }
 
-$ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='MSMAgent'"
+$ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $ServiceConfig) {
-    throw "MSMAgent service was not created."
+    throw "$ServiceName service was not created."
 }
 if ($ServiceConfig.StartName -ne "LocalSystem") {
-    throw "MSMAgent was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem."
+    throw "$ServiceName was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem."
 }
 if ($ServiceConfig.PathName -notmatch '--run-service') {
-    throw "MSMAgent has unexpected service command line: $($ServiceConfig.PathName)"
+    throw "$ServiceName has unexpected service command line: $($ServiceConfig.PathName)"
 }
 
 Get-NetFirewallRule -DisplayName "MSM Agent" -ErrorAction SilentlyContinue |
@@ -76,12 +89,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Start-Sleep -Milliseconds 500
-$Service = Get-Service -Name "MSMAgent" -ErrorAction Stop
+$Service = Get-Service -Name $ServiceName -ErrorAction Stop
 if ($Service.Status -ne "Running") {
-    throw "MSMAgent was installed but failed to reach Running state. Current state: $($Service.Status)"
+    throw "$ServiceName was installed but failed to reach Running state. Current state: $($Service.Status)"
 }
 
-Write-Host "MSM agent installed successfully as MSMAgent"
+Write-Host "MSM agent installed successfully as $ServiceName"
 Write-Host "Service account: LocalSystem"
 Write-Host "Install directory: $InstallDir"
 Write-Host "Service command: $($ServiceConfig.PathName)"
