@@ -28,15 +28,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("Windows only".into());
     }
 
-    // This process is intentionally only the per-user VNC worker. The Windows
-    // MSM system service owns its lifetime: it creates one worker for each
-    // active interactive session, detects when the worker exits, and starts a
-    // replacement. Keeping lifecycle ownership in the service avoids detached
-    // worker supervisors that can outlive the service's worker registry.
-    //
-    // xcap::Monitor contains native Windows handles and is not Send. The
-    // monitor must therefore be created and used on the same dedicated OS
-    // thread rather than being constructed on the Tokio thread and moved.
     let monitors = Monitor::all()?;
     let primary = monitors
         .iter()
@@ -69,6 +60,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 return;
             }
         };
+        let mut previous_button_mask = 0u8;
 
         while let Some(event) = events.recv().await {
             match event {
@@ -76,7 +68,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     x, y, button_mask, ..
                 } => {
                     let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
-                    apply_buttons(&mut enigo, button_mask);
+                    apply_button_transitions(&mut enigo, previous_button_mask, button_mask);
+                    previous_button_mask = button_mask;
                 }
                 ServerEvent::KeyPress { key, down, .. } => {
                     if let Some(mapped) = map_keysym(key) {
@@ -91,20 +84,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 ServerEvent::ClientConnected { client_id } => {
+                    previous_button_mask = 0;
                     info!(
                         session_id = args.session_id,
                         client_id, "VNC client connected"
                     );
                 }
-                ServerEvent::ClientDisconnected { .. } => {}
+                ServerEvent::ClientDisconnected { .. } => {
+                    if previous_button_mask != 0 {
+                        apply_button_transitions(&mut enigo, previous_button_mask, 0);
+                        previous_button_mask = 0;
+                    }
+                }
                 _ => {}
             }
         }
     });
 
-    // Create the Windows monitor object inside the capture thread. xcap 0.9.8
-    // contains HMONITOR, which is !Send, so even moving a previously-created
-    // Monitor into std::thread::spawn is invalid.
     let capture_server = server.clone();
     let runtime = tokio::runtime::Handle::current();
     let session_id = args.session_id;
@@ -136,9 +132,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         loop {
             match monitor.capture_image() {
                 Ok(image) => {
-                    // Capture dimensions should match the VNC framebuffer. If Windows
-                    // changes display configuration, the worker currently skips the frame;
-                    // dynamic framebuffer resize will be added with display-change handling.
                     if image.width() == capture_width as u32
                         && image.height() == capture_height as u32
                     {
@@ -168,13 +161,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn apply_buttons(enigo: &mut Enigo, mask: u8) {
+fn apply_button_transitions(enigo: &mut Enigo, previous_mask: u8, current_mask: u8) {
     for (bit, button) in [
         (1u8, Button::Left),
         (2u8, Button::Middle),
         (4u8, Button::Right),
     ] {
-        let direction = if mask & bit != 0 {
+        let was_pressed = previous_mask & bit != 0;
+        let is_pressed = current_mask & bit != 0;
+
+        if was_pressed == is_pressed {
+            continue;
+        }
+
+        let direction = if is_pressed {
             Direction::Press
         } else {
             Direction::Release
