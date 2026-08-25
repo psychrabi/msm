@@ -4,12 +4,6 @@ import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
 import './styles.css';
 
-type SecurityFailureEvent = Event & {
-  detail: {
-    reason: string;
-  };
-};
-
 type Session = {
   sessionId: string;
   username: string;
@@ -390,8 +384,8 @@ function App() {
         if (sessionId && stillExists && socketRef.current) void startRemoteSession();
       }, REMOTE_RECONNECT_DELAY_MS);
     });
-    rfb.addEventListener('securityfailure', (event: SecurityFailureEvent) => {
-      setError(`VNC authentication failed: ${event.detail.reason}`);
+    rfb.addEventListener('securityfailure', (event) => {
+      setError(`VNC authentication failed: ${event.detail.reason ?? 'Unknown reason'}`);
       setConnectingRemote(false);
     });
     rfbRef.current = rfb;
