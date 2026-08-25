@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
-import { Activity, ChevronDown, CircleHelp, Eye, EyeOff, Laptop2, Monitor, MoreHorizontal, PanelLeft, Settings2, Wifi, WifiOff } from 'lucide-react';
+import { Activity, CircleHelp, Eye, EyeOff, Laptop2, Monitor, MoreHorizontal, PanelLeft, Settings2, Wifi, WifiOff } from 'lucide-react';
 import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
 import { Badge } from './components/ui/badge';
@@ -50,15 +50,15 @@ const HEALTH_CHECK_INTERVAL_MS = 5000;
 function normalizeEndpoint(endpoint: string): string {
   const value = endpoint.trim();
   if (!value) return value;
-  if (/^https?:\\/\\//i.test(value)) {
-    const ws = value.replace(/^http/i, 'ws').replace(/\\/$/, '');
+  if (/^https?:\/\//i.test(value)) {
+    const ws = value.replace(/^http/i, 'ws').replace(/\/$/, '');
     return ws.endsWith('/ws') ? ws : `${ws}/ws`;
   }
-  if (/^wss?:\\/\\//i.test(value)) {
-    const ws = value.replace(/\\/$/, '');
+  if (/^wss?:\/\//i.test(value)) {
+    const ws = value.replace(/\/$/, '');
     return ws.endsWith('/ws') ? ws : `${ws}/ws`;
   }
-  return `ws://${value.replace(/\\/$/, '')}/ws`;
+  return `ws://${value.replace(/\/$/, '')}/ws`;
 }
 
 function loadSavedEndpoint(): string | null {
@@ -97,7 +97,7 @@ async function deleteCredential(endpoint: string) {
 }
 
 function isUnauthorizedError(error: unknown) {
-  return /\\b401\\b|unauthorized|authentication failed|not authorized/i.test(error instanceof Error ? error.message : String(error));
+  return /\b401\b|unauthorized|authentication failed|not authorized/i.test(error instanceof Error ? error.message : String(error));
 }
 
 function App() {
