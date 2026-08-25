@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import WebSocket from '@tauri-apps/plugin-websocket';
-import RFB from '@novnc/novnc/lib/rfb.js';
+import RFB from '@novnc/novnc';
 import './styles.css';
 
 type Session = { sessionId: string; username: string; state: string; seatId?: string | null; display?: string | null };
