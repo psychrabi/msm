@@ -16,10 +16,11 @@ name = "msm-agent-worker"
 path = "src/worker.rs"
 
 [dependencies]
-axum = { version = "0.8", features = ["ws"] }
-clap = { version = "4", features = ["derive"] }
+axum.workspace = true
+clap.workspace = true
 dirs.workspace = true
 enigo = "0.6.1"
+futures-util.workspace = true
 rustvncserver = "2.2.1"
 serde.workspace = true
 serde_json.workspace = true
