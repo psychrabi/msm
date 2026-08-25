@@ -56,7 +56,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "VNC worker starting"
     );
 
-    let event_server = server.clone();
     let event_session_id = args.session_id;
     tokio::spawn(async move {
         let mut enigo = match Enigo::new(&Settings::default()) {
@@ -89,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         warn!(key, "unmapped VNC key symbol");
                     }
                 }
-                ServerEvent::ClipboardReceived { text, .. } => {
+                ServerEvent::CutText { text, .. } => {
                     if let Err(error) = set_windows_clipboard(&text) {
                         warn!(
                             session_id = event_session_id,
@@ -114,14 +113,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
         }
-
-        drop(event_server);
     });
 
     // Bridge the clipboard belonging to this interactive Windows session into
     // the VNC server. The worker runs under the logged-in user's token, so the
     // clipboard APIs operate on that user's clipboard rather than LocalSystem.
     let clipboard_server = server.clone();
+    let clipboard_runtime = tokio::runtime::Handle::current();
     let clipboard_session_id = args.session_id;
     std::thread::spawn(move || {
         let mut last_text: Option<String> = None;
@@ -129,7 +127,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(text) = get_windows_clipboard() {
                 let changed = last_text.as_ref() != Some(&text);
                 if changed {
-                    clipboard_server.send_clipboard(&text);
+                    if let Err(error) = clipboard_runtime.block_on(
+                        clipboard_server.send_cut_text_to_all(text.clone()),
+                    ) {
+                        warn!(
+                            session_id = clipboard_session_id,
+                            ?error,
+                            "unable to send Windows clipboard to VNC clients"
+                        );
+                    }
                     last_text = Some(text);
                 }
             }
@@ -199,6 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(target_os = "windows")]
 fn get_windows_clipboard() -> Option<String> {
+    use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     };
@@ -212,17 +219,17 @@ fn get_windows_clipboard() -> Option<String> {
 
         let result = if IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() {
             let handle = match GetClipboardData(CF_UNICODETEXT) {
-                Ok(value) => value,
+                Ok(value) => HGLOBAL(value.0),
                 Err(_) => {
                     let _ = CloseClipboard();
                     return None;
                 }
             };
-            let size = GlobalSize(handle.0 as _);
-            let ptr = GlobalLock(handle.0 as _);
+            let size = GlobalSize(handle);
+            let ptr = GlobalLock(handle);
             if ptr.is_null() || size == 0 {
                 if !ptr.is_null() {
-                    let _ = GlobalUnlock(handle.0 as _);
+                    let _ = GlobalUnlock(handle);
                 }
                 None
             } else {
@@ -233,7 +240,7 @@ fn get_windows_clipboard() -> Option<String> {
                     .position(|value| *value == 0)
                     .unwrap_or(max_units);
                 let text = String::from_utf16_lossy(&slice[..len]);
-                let _ = GlobalUnlock(handle.0 as _);
+                let _ = GlobalUnlock(handle);
                 Some(text)
             }
         } else {
