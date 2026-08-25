@@ -6,7 +6,7 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{VncServer, server::ServerEvent};
+use rustvncserver::{server::ServerEvent, VncServer};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -56,6 +56,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "VNC worker starting"
     );
 
+    let event_server = server.clone();
+    let event_session_id = args.session_id;
     tokio::spawn(async move {
         let mut enigo = match Enigo::new(&Settings::default()) {
             Ok(value) => value,
@@ -87,11 +89,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         warn!(key, "unmapped VNC key symbol");
                     }
                 }
+                ServerEvent::ClipboardReceived { text, .. } => {
+                    if let Err(error) = set_windows_clipboard(&text) {
+                        warn!(
+                            session_id = event_session_id,
+                            ?error,
+                            "unable to update Windows clipboard from VNC client"
+                        );
+                    }
+                }
                 ServerEvent::ClientConnected { client_id } => {
                     previous_button_mask = 0;
                     info!(
-                        session_id = args.session_id,
-                        client_id, "VNC client connected"
+                        session_id = event_session_id,
+                        client_id,
+                        "VNC client connected"
                     );
                 }
                 ServerEvent::ClientDisconnected { .. } => {
@@ -102,6 +114,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 _ => {}
             }
+        }
+
+        drop(event_server);
+    });
+
+    // Bridge the clipboard belonging to this interactive Windows session into
+    // the VNC server. The worker runs under the logged-in user's token, so the
+    // clipboard APIs operate on that user's clipboard rather than LocalSystem.
+    let clipboard_server = server.clone();
+    let clipboard_session_id = args.session_id;
+    std::thread::spawn(move || {
+        let mut last_text: Option<String> = None;
+        loop {
+            if let Some(text) = get_windows_clipboard() {
+                let changed = last_text.as_ref() != Some(&text);
+                if changed {
+                    clipboard_server.send_clipboard(&text);
+                    last_text = Some(text);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     });
 
@@ -163,6 +196,107 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     server.listen(args.port).await?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn get_windows_clipboard() -> Option<String> {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return None;
+        }
+
+        let result = if IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() {
+            let handle = match GetClipboardData(CF_UNICODETEXT) {
+                Ok(value) => value,
+                Err(_) => {
+                    let _ = CloseClipboard();
+                    return None;
+                }
+            };
+            let size = GlobalSize(handle.0 as _);
+            let ptr = GlobalLock(handle.0 as _);
+            if ptr.is_null() || size == 0 {
+                if !ptr.is_null() {
+                    let _ = GlobalUnlock(handle.0 as _);
+                }
+                None
+            } else {
+                let max_units = (size as usize) / std::mem::size_of::<u16>();
+                let slice = std::slice::from_raw_parts(ptr as *const u16, max_units);
+                let len = slice.iter().position(|value| *value == 0).unwrap_or(max_units);
+                let text = String::from_utf16_lossy(&slice[..len]);
+                let _ = GlobalUnlock(handle.0 as _);
+                Some(text)
+            }
+        } else {
+            None
+        };
+
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_windows_clipboard() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_clipboard(text: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+    use windows::Win32::Foundation::HANDLE;
+
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+
+    unsafe {
+        OpenClipboard(None)?;
+        if let Err(error) = EmptyClipboard() {
+            let _ = CloseClipboard();
+            return Err(error.into());
+        }
+
+        let memory = match GlobalAlloc(GMEM_MOVEABLE, wide.len() * std::mem::size_of::<u16>()) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = CloseClipboard();
+                return Err(error.into());
+            }
+        };
+        let ptr = GlobalLock(memory);
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return Err(std::io::Error::last_os_error().into());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
+        let _ = GlobalUnlock(memory);
+
+        if let Err(error) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))) {
+            let _ = CloseClipboard();
+            return Err(error.into());
+        }
+
+        // Ownership transfers to the Windows clipboard after SetClipboardData.
+        let _ = CloseClipboard();
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_windows_clipboard(_text: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    Err("Windows only".into())
 }
 
 #[cfg(target_os = "windows")]
