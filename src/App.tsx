@@ -22,6 +22,10 @@ type AgentMessage =
   | { type: 'error'; message: string };
 type SavedConnection = { endpoint: string };
 type RemoteConnection = RemoteSession & { username: string };
+type RfbClipboardApi = RFB & {
+  clipboardPasteFrom(text: string): void;
+  addEventListener(type: 'clipboard', listener: (event: CustomEvent<{ text: string }>) => void): void;
+};
 
 const SAVED_CONNECTION_KEY = 'msm.saved-agent-connection';
 const LEGACY_TOKEN_KEY = 'msm.saved-agent-token';
@@ -91,12 +95,13 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
 
     container.replaceChildren();
     const rfb = new RFB(container, controlEndpoint.toString(), { credentials: { password: remote.vncPassword } });
+    const clipboardRfb = rfb as RfbClipboardApi;
     rfb.scaleViewport = true;
     rfb.resizeSession = false;
     rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
     rfb.addEventListener('connect', () => onErrorRef.current(''));
-    rfb.addEventListener('clipboard', (event) => {
+    clipboardRfb.addEventListener('clipboard', (event) => {
       if (navigator.clipboard) {
         void navigator.clipboard.writeText(event.detail.text).catch(() => undefined);
       }
@@ -115,7 +120,7 @@ function RemoteViewer({ remote, endpoint, token, viewOnly, onDisconnect, onError
       const text = event.clipboardData.getData('text/plain');
       if (!text) return;
       event.preventDefault();
-      rfb.clipboardPasteFrom(text);
+      (rfbRef.current as RfbClipboardApi).clipboardPasteFrom(text);
     };
     container.addEventListener('paste', handlePaste);
 
