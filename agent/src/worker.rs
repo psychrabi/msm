@@ -6,7 +6,7 @@ use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{server::ServerEvent, VncServer};
+use rustvncserver::{VncServer, server::ServerEvent};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -99,7 +99,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 ServerEvent::ClientConnected { client_id } => {
                     previous_button_mask = 0;
-                    info!(session_id = event_session_id, client_id, "VNC client connected");
+                    info!(
+                        session_id = event_session_id,
+                        client_id, "VNC client connected"
+                    );
                 }
                 ServerEvent::ClientDisconnected { .. } => {
                     if previous_button_mask != 0 {
@@ -124,9 +127,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(text) = get_windows_clipboard() {
                 let changed = last_text.as_ref() != Some(&text);
                 if changed {
-                    if let Err(error) = clipboard_runtime.block_on(
-                        clipboard_server.send_cut_text_to_all(text.clone()),
-                    ) {
+                    if let Err(error) = clipboard_runtime
+                        .block_on(clipboard_server.send_cut_text_to_all(text.clone()))
+                    {
                         warn!(
                             session_id = clipboard_session_id,
                             ?error,
@@ -311,8 +314,8 @@ fn set_windows_clipboard(_text: &str) -> Result<(), Box<dyn Error + Send + Sync>
 #[cfg(target_os = "windows")]
 fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, mouse_event,
     };
 
     let transitions = [
