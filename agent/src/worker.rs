@@ -1,3 +1,7 @@
+// In release builds the per-session worker uses the Windows GUI subsystem so
+// no console window is created when the system service launches a worker.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{env, error::Error, time::Duration};
 
 use clap::Parser;
