@@ -1,102 +1,119 @@
 # MSM
 
-MSM is a VNC-based remote monitor and control application designed for multiseat workstations.
+MSM is a VNC-based remote monitor and control application for Windows multiseat workstations.
 
 ## Architecture
 
-MSM is a single Git repository containing two independently runnable applications:
+MSM is one Git repository containing two independently runnable applications:
 
 ```text
 msm/
-├── agent/          # headless Rust machine agent
+├── agent/          # headless Rust Windows machine agent + worker
 ├── src-tauri/      # Tauri desktop viewer backend
 ├── src/            # React/TypeScript viewer UI
 └── docs/
 ```
 
-The **viewer** is an operator application. The **agent** is installed independently on computers that need to be remotely monitored or controlled.
+The **viewer** is installed on the operator computer. The **agent** is installed independently on every Windows computer that should be remotely monitored or controlled.
 
 ```text
                  MSM Viewer
               Tauri + React
                     │
-             WebSocket control
+             authenticated WS
                     │
         ┌───────────┼───────────┐
         ▼           ▼           ▼
       Agent A     Agent B     Agent C
         │           │           │
-      Seats       Seats       Seats
+     Sessions    Sessions    Sessions
 ```
 
-There is intentionally no CI/CD yet. Development is local and Git-based.
+There is intentionally no CI/CD. Development is local and Git-based.
+
+## Windows-only scope
+
+The current product target is **Windows only**. Linux and macOS implementations are intentionally not maintained at this stage.
 
 ## Current stack
 
-- Rust for the application core, machine agent, VNC/RFB work, and native OS integration.
-- Tauri 2 for the desktop application shell.
-- React + TypeScript + Vite for the UI.
-- PostgreSQL for server-side persistence when the management backend is introduced.
+- Rust for the machine agent, per-session worker, VNC/RFB server integration, and Windows integration.
+- Tauri 2 for the desktop viewer shell.
+- React + TypeScript + Vite for the viewer UI.
+- `rustvncserver` for RFB/VNC server functionality.
+- `xcap` for Windows desktop capture.
+- `enigo` for Windows keyboard/mouse input injection.
+- `windows` crate for Windows Terminal Services/session APIs and user-session process creation.
+- `@novnc/novnc` for the viewer-side VNC client.
 - Prefer established Tauri plugins and mature Rust crates over custom infrastructure.
 
 ## Multiseat model
 
-A physical device can contain multiple independent user sessions. Each session is a first-class remote-control target.
+A physical Windows computer can contain multiple independent logged-in sessions. Each session is a first-class remote-control target.
 
 ```text
 Device
 ├── Seat 1
-│   └── Session A
-│       └── VNC server
+│   └── Session 1
+│       └── msm-agent-worker → VNC :5901
 ├── Seat 2
-│   └── Session B
-│       └── VNC server
+│   └── Session 2
+│       └── msm-agent-worker → VNC :5902
 └── Seat 3
-    └── Session C
-        └── VNC server
+    └── Session 3
+        └── msm-agent-worker → VNC :5903
 ```
 
-Session identity must not depend on a VNC TCP port. Ports/sockets are implementation details owned by the agent.
+The session ID is the durable identity. VNC ports are ephemeral implementation details owned by the agent.
 
 ## Agent
 
-The standalone agent currently provides:
+The standalone Windows agent provides:
 
 - Persistent device identity.
-- Persistent local access token for development pairing.
-- Authenticated HTTP health endpoint.
+- Persistent local development access token.
+- Authenticated health endpoint.
 - Authenticated WebSocket control endpoint.
-- Cross-platform baseline session discovery.
-  - Windows: `quser`.
-  - Linux: `loginctl`, with `who` fallback.
-  - macOS: `who`.
-- JSON control messages for device information and session discovery.
+- Windows Terminal Services session discovery.
+- Per-session worker startup using the logged-in user's Windows token.
+- Per-session VNC server lifecycle.
+- Authenticated WebSocket-to-VNC proxy.
 
-Run it locally:
+The worker runs inside the target user's Windows session. This is important: screen capture and input injection are performed in the target session rather than by a single machine-wide desktop process.
 
-```bash
-cargo run -p msm-agent
-```
+### Local development
 
-Print the device identity and development access token:
+Print the device identity and token:
 
-```bash
+```powershell
 cargo run -p msm-agent -- --print-identity
 ```
 
-The default development endpoint is:
+Start the agent:
 
-```text
-ws://127.0.0.1:40123/ws
-```
-
-To test another computer on a LAN, explicitly bind the agent to a reachable address:
-
-```bash
+```powershell
 cargo run -p msm-agent -- --listen 0.0.0.0:40123
 ```
 
-The current LAN endpoint is intended for development only. It uses a bearer token but does not yet provide TLS or a production relay. Do not expose it directly to the public Internet.
+The viewer connects to:
+
+```text
+ws://<agent-ip>:40123/ws
+```
+
+### Windows service installation
+
+Build both binaries and use:
+
+```powershell
+.\packaging\windows\install-agent.ps1 \
+  -AgentBinaryPath .\msm-agent.exe \
+  -WorkerBinaryPath .\msm-agent-worker.exe
+```
+
+The installer registers the agent as a LocalSystem Windows service. The service uses the logged-in user's Windows session token to launch the per-session worker.
+
+The installer also permits the agent control port and blocks inbound access to the internal VNC port range. The VNC ports are therefore implementation endpoints, not the intended remote-access interface.
 
 ## Viewer
 
@@ -107,10 +124,35 @@ npm install
 npm run tauri dev
 ```
 
-Enter the agent WebSocket URL and the token printed by `--print-identity`. The viewer will connect to the standalone agent and display its discovered sessions.
+Enter the agent WebSocket URL and the token printed by `--print-identity`. The viewer discovers the active Windows sessions, starts a worker for the selected session, and embeds noVNC for the resulting remote desktop.
 
-## Current implementation boundary
+## Current remote desktop path
 
-The distributed control path and session discovery are implemented before VNC framebuffer transport. The next transport layer should use established VNC/RFB libraries rather than a custom protocol implementation. A current candidate is `rustvncserver`, which provides an async Rust RFB server with standard VNC encodings and framebuffer APIs.
+```text
+Tauri Viewer
+    │
+    │ WebSocket control
+    ▼
+MSM Agent
+    │
+    │ session ID
+    ▼
+Windows session token
+    │
+    ▼
+msm-agent-worker
+    │
+    ├── xcap → target desktop framebuffer
+    ├── rustvncserver → RFB
+    └── enigo ← keyboard/mouse
+    │
+    ▼
+Agent WebSocket VNC proxy
+    │
+    ▼
+noVNC in Viewer
+```
 
-Screen capture and input injection remain deliberately OS/session-specific. They must be implemented so that a VNC instance attached to one multiseat session cannot capture or inject into another user's session.
+The first implementation captures the primary monitor at a modest fixed frame cadence and supports basic mouse/keyboard input. Performance tuning, dirty-region capture, multi-monitor support, richer key mapping, clipboard, and production-grade transport security are subsequent hardening work.
+
+The development control/VNC endpoints are not a production Internet security boundary yet. Do not expose them directly to the public Internet.
