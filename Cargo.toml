@@ -3,18 +3,16 @@ members = ["src-tauri", "agent"]
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
-rust-version = "1.77.2"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
-axum = { version = "0.8", features = ["ws"] }
-clap = { version = "4", features = ["derive"] }
-dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "process", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net", "process"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
