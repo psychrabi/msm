@@ -1,29 +1,27 @@
-use std::{env, fs, io, net::SocketAddr, path::PathBuf};
+use std::{collections::HashMap, env, fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path, Query, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, any},
+    routing::{any, get},
     Json, Router,
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use tokio::{process::Command, signal};
+use tokio::{net::TcpStream, signal, sync::Mutex};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_LISTEN: &str = "127.0.0.1:40123";
+const FIRST_VNC_PORT: u16 = 5901;
 
 #[derive(Debug, Parser)]
-#[command(name = "msm-agent", version, about = "MSM headless machine agent")]
+#[command(name = "msm-agent", version, about = "MSM Windows machine agent")]
 struct Args {
-    /// Address for the development control API.
     #[arg(long, default_value = DEFAULT_LISTEN)]
     listen: SocketAddr,
-
-    /// Print the persisted device identity and exit.
     #[arg(long)]
     print_identity: bool,
 }
@@ -48,10 +46,19 @@ struct SessionInfo {
     display: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteSession {
+    session_id: String,
+    port: u16,
+    vnc_password: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     identity: DeviceIdentity,
     auth_token: String,
+    workers: Arc<Mutex<HashMap<u32, RemoteSession>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +66,7 @@ struct AppState {
 enum ServerMessage {
     Hello { identity: DeviceIdentity },
     Sessions { sessions: Vec<SessionInfo> },
+    RemoteSession { session: RemoteSession },
     Error { message: String },
 }
 
@@ -66,30 +74,26 @@ enum ServerMessage {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ClientMessage {
     ListSessions,
+    StartSession { session_id: String },
     Ping,
 }
 
+#[derive(Debug, Deserialize)]
+struct TokenQuery { token: String }
+
 fn identity_path() -> Result<PathBuf, io::Error> {
-    let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "unable to determine local data directory")
-    })?;
+    let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unable to determine local data directory"))?;
     Ok(base.join("MSM").join("agent").join("identity.json"))
 }
 
 fn token_path() -> Result<PathBuf, io::Error> {
-    let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "unable to determine local data directory")
-    })?;
+    let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unable to determine local data directory"))?;
     Ok(base.join("MSM").join("agent").join("access-token"))
 }
 
 fn load_or_create_identity() -> Result<DeviceIdentity, Box<dyn std::error::Error>> {
     let path = identity_path()?;
-
-    if let Ok(contents) = fs::read_to_string(&path) {
-        return Ok(serde_json::from_str::<DeviceIdentity>(&contents)?);
-    }
-
+    if let Ok(contents) = fs::read_to_string(&path) { return Ok(serde_json::from_str(&contents)?); }
     let identity = DeviceIdentity {
         device_id: Uuid::new_v4(),
         device_name: hostname(),
@@ -97,233 +101,176 @@ fn load_or_create_identity() -> Result<DeviceIdentity, Box<dyn std::error::Error
         architecture: env::consts::ARCH.to_owned(),
         agent_version: AGENT_VERSION.to_owned(),
     };
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
     fs::write(path, serde_json::to_string_pretty(&identity)?)?;
     Ok(identity)
 }
 
 fn load_or_create_token() -> Result<String, Box<dyn std::error::Error>> {
     let path = token_path()?;
-
     if let Ok(token) = fs::read_to_string(&path) {
         let token = token.trim().to_owned();
-        if !token.is_empty() {
-            return Ok(token);
-        }
+        if !token.is_empty() { return Ok(token); }
     }
-
     let token = Uuid::new_v4().to_string();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
     fs::write(path, &token)?;
     Ok(token)
 }
 
 fn hostname() -> String {
-    #[cfg(windows)]
-    {
-        env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_owned())
-    }
-
-    #[cfg(not(windows))]
-    {
-        env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
-    }
+    env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_owned())
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
     let expected = format!("Bearer {token}");
-    headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == expected)
+    headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()).is_some_and(|value| value == expected)
 }
 
 async fn health(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !authorized(&headers, &state.auth_token) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "unauthorized" })));
-    }
-
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "ok",
-        "device": state.identity,
-    })))
+    if !authorized(&headers, &state.auth_token) { return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"unauthorized"}))); }
+    (StatusCode::OK, Json(serde_json::json!({"status":"ok", "device":state.identity})))
 }
 
-async fn websocket(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if !authorized(&headers, &state.auth_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-
+async fn websocket(ws: WebSocketUpgrade, State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !authorized(&headers, &state.auth_token) { return StatusCode::UNAUTHORIZED.into_response(); }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    let hello = serde_json::to_string(&ServerMessage::Hello {
-        identity: state.identity.clone(),
-    });
-    if let Ok(message) = hello {
-        if socket.send(Message::Text(message.into())).await.is_err() {
-            return;
-        }
-    }
-
+    send_message(&mut socket, ServerMessage::Hello { identity: state.identity.clone() }).await;
     while let Some(Ok(message)) = socket.recv().await {
-        let Message::Text(text) = message else {
-            continue;
-        };
-
+        let Message::Text(text) = message else { continue };
         let response = match serde_json::from_str::<ClientMessage>(&text) {
-            Ok(ClientMessage::ListSessions) => {
-                ServerMessage::Sessions {
-                    sessions: discover_sessions().await,
-                }
-            }
-            Ok(ClientMessage::Ping) => ServerMessage::Hello {
-                identity: state.identity.clone(),
+            Ok(ClientMessage::ListSessions) => ServerMessage::Sessions { sessions: discover_windows_sessions().await },
+            Ok(ClientMessage::StartSession { session_id }) => match start_session(&state, &session_id).await {
+                Ok(session) => ServerMessage::RemoteSession { session },
+                Err(error) => ServerMessage::Error { message: error.to_string() },
             },
-            Err(error) => ServerMessage::Error {
-                message: format!("invalid request: {error}"),
-            },
+            Ok(ClientMessage::Ping) => ServerMessage::Hello { identity: state.identity.clone() },
+            Err(error) => ServerMessage::Error { message: format!("invalid request: {error}") },
         };
+        if send_message(&mut socket, response).await.is_err() { break; }
+    }
+}
 
-        if let Ok(payload) = serde_json::to_string(&response) {
-            if socket.send(Message::Text(payload.into())).await.is_err() {
-                break;
+async fn send_message(socket: &mut WebSocket, message: ServerMessage) -> Result<(), axum::Error> {
+    let payload = serde_json::to_string(&message).map_err(|error| axum::Error::new(error))?;
+    socket.send(Message::Text(payload.into())).await
+}
+
+async fn vnc_websocket(
+    Path(session_id): Path<u32>,
+    Query(query): Query<TokenQuery>,
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    if query.token != state.auth_token { return StatusCode::UNAUTHORIZED.into_response(); }
+    let session = state.workers.lock().await.get(&session_id).cloned();
+    let Some(session) = session else { return StatusCode::NOT_FOUND.into_response(); };
+    ws.on_upgrade(move |socket| proxy_vnc(socket, session.port))
+}
+
+async fn proxy_vnc(mut websocket: WebSocket, port: u16) {
+    let Ok(mut tcp) = TcpStream::connect(("127.0.0.1", port)).await else { return; };
+    let (mut read_half, mut write_half) = tcp.split();
+    let (mut ws_tx, mut ws_rx) = websocket.split();
+    let to_tcp = async {
+        while let Some(Ok(message)) = ws_rx.recv().await {
+            match message {
+                Message::Binary(bytes) => { if tokio::io::AsyncWriteExt::write_all(&mut write_half, &bytes).await.is_err() { break; } }
+                Message::Close(_) => break,
+                _ => {}
             }
         }
-    }
+    };
+    let to_ws = async {
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let count = match tokio::io::AsyncReadExt::read(&mut read_half, &mut buffer).await { Ok(0) | Err(_) => break, Ok(count) => count };
+            if ws_tx.send(Message::Binary(buffer[..count].to_vec().into())).await.is_err() { break; }
+        }
+    };
+    tokio::select! { _ = to_tcp => {}, _ = to_ws => {} }
 }
 
-async fn discover_sessions() -> Vec<SessionInfo> {
-    #[cfg(target_os = "windows")]
-    {
-        return discover_windows_sessions().await;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        return discover_linux_sessions().await;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return discover_unix_sessions().await;
-    }
-
-    #[allow(unreachable_code)]
-    Vec::new()
-}
-
-#[cfg(target_os = "windows")]
 async fn discover_windows_sessions() -> Vec<SessionInfo> {
-    let output = match Command::new("quser").output().await {
-        Ok(output) if output.status.success() => output,
-        _ => return Vec::new(),
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 4 {
-                return None;
-            }
-            let username = fields[0].trim_start_matches('>').to_owned();
-            let session_id = fields.get(2)?.to_string();
-            let state = fields.get(3)?.to_lowercase();
-            Some(SessionInfo {
-                session_id,
-                username,
-                state,
-                seat_id: None,
-                display: None,
-            })
-        })
-        .collect()
+    tokio::task::spawn_blocking(|| windows_sessions().unwrap_or_default()).await.unwrap_or_default()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn discover_unix_sessions() -> Vec<SessionInfo> {
-    let output = match Command::new("who").output().await {
-        Ok(output) if output.status.success() => output,
-        _ => return Vec::new(),
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            let username = fields.first()?.to_string();
-            let tty = fields.get(1)?.to_string();
-            let display = tty.strip_prefix("tty").map(str::to_owned);
-            Some(SessionInfo {
-                session_id: tty.clone(),
-                username,
-                state: "active".to_owned(),
-                seat_id: None,
-                display,
-            })
-        })
-        .collect()
-}
-
-#[cfg(target_os = "linux")]
-async fn discover_linux_sessions() -> Vec<SessionInfo> {
-    let output = Command::new("loginctl")
-        .args(["list-sessions", "--no-legend"])
-        .output()
-        .await;
-
-    let Ok(output) = output else {
-        return discover_unix_sessions().await;
-    };
-
-    if !output.status.success() {
-        return discover_unix_sessions().await;
+#[cfg(windows)]
+fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error>> {
+    use windows::Win32::System::RemoteDesktop::{WTSEnumerateSessionsW, WTSFreeMemory, WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSActive};
+    unsafe {
+        let mut sessions_ptr: *mut WTS_SESSION_INFOW = std::ptr::null_mut();
+        let mut count = 0u32;
+        WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &mut sessions_ptr, &mut count)?;
+        let sessions = std::slice::from_raw_parts(sessions_ptr, count as usize);
+        let mut result = Vec::new();
+        for session in sessions {
+            if session.State != WTSActive { continue; }
+            let id = session.SessionId;
+            let username = query_username(id).unwrap_or_else(|| "unknown".to_owned());
+            result.push(SessionInfo { session_id: id.to_string(), username, state: "active".to_owned(), seat_id: Some(format!("seat-{id}")), display: None });
+        }
+        WTSFreeMemory(sessions_ptr as _);
+        Ok(result)
     }
-
-    let mut sessions = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let Some(session_id) = fields.first() else { continue };
-        let username = fields.get(2).copied().unwrap_or("unknown");
-        let details = Command::new("loginctl")
-            .args(["show-session", session_id, "--property=State", "--property=Name", "--property=Remote", "--value"])
-            .output()
-            .await;
-
-        let (state, name) = match details {
-            Ok(details) if details.status.success() => {
-                let values: Vec<&str> = String::from_utf8_lossy(&details.stdout).lines().collect();
-                (
-                    values.first().copied().unwrap_or("unknown").to_owned(),
-                    values.get(1).copied().unwrap_or(username).to_owned(),
-                )
-            }
-            _ => ("unknown".to_owned(), username.to_owned()),
-        };
-
-        sessions.push(SessionInfo {
-            session_id: (*session_id).to_owned(),
-            username: name,
-            state,
-            seat_id: None,
-            display: None,
-        });
-    }
-
-    sessions
 }
+
+#[cfg(windows)]
+fn query_username(session_id: u32) -> Option<String> {
+    use windows::Win32::System::RemoteDesktop::{WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTSUserName};
+    unsafe {
+        let mut buffer = std::ptr::null_mut();
+        let mut bytes = 0u32;
+        WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, WTSUserName, &mut buffer, &mut bytes).ok().ok()?;
+        let chars = std::slice::from_raw_parts(buffer as *const u16, (bytes as usize / 2).saturating_sub(1));
+        let name = String::from_utf16_lossy(chars);
+        WTSFreeMemory(buffer as _);
+        Some(name)
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error>> { Ok(Vec::new()) }
+
+async fn start_session(state: &AppState, session_id: &str) -> Result<RemoteSession, Box<dyn std::error::Error + Send + Sync>> {
+    let id: u32 = session_id.parse()?;
+    if let Some(existing) = state.workers.lock().await.get(&id).cloned() { return Ok(existing); }
+    let port = FIRST_VNC_PORT + (id % 1000) as u16;
+    let password = state.auth_token.chars().take(8).collect::<String>();
+    spawn_worker(id, port, &password)?;
+    let session = RemoteSession { session_id: session_id.to_owned(), port, vnc_password: password };
+    state.workers.lock().await.insert(id, session.clone());
+    Ok(session)
+}
+
+#[cfg(windows)]
+fn spawn_worker(session_id: u32, port: u16, password: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+    use windows::{core::PWSTR, Win32::Foundation::CloseHandle, Win32::System::RemoteDesktop::WTSQueryUserToken, Win32::System::Threading::{CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW}};
+
+    let token = unsafe { let mut token = Default::default(); WTSQueryUserToken(session_id, &mut token)?; token };
+    let exe = env::current_exe()?.with_file_name("msm-agent-worker.exe");
+    let command = format!("\"{}\" --session-id {} --port {} --password {}", exe.display(), session_id, port, password);
+    let mut command_w: Vec<u16> = OsStr::new(&command).encode_wide().chain(Some(0)).collect();
+    let desktop: Vec<u16> = OsStr::new("winsta0\\default").encode_wide().chain(Some(0)).collect();
+    let mut startup = STARTUPINFOW::default();
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    startup.lpDesktop = PWSTR(desktop.as_ptr() as *mut u16);
+    let mut process = PROCESS_INFORMATION::default();
+    unsafe {
+        CreateProcessAsUserW(token, None, Some(PWSTR(command_w.as_mut_ptr())), None, None, false, PROCESS_CREATION_FLAGS(0), None, None, &startup, &mut process)?;
+        CloseHandle(process.hThread)?;
+        CloseHandle(process.hProcess)?;
+        CloseHandle(token)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn spawn_worker(_session_id: u32, _port: u16, _password: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> { Err("Windows only".into()) }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -331,38 +278,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let identity = load_or_create_identity()?;
     let auth_token = load_or_create_token()?;
+    if args.print_identity { println!("{}", serde_json::to_string_pretty(&identity)?); println!("access_token={auth_token}"); return Ok(()); }
 
-    if args.print_identity {
-        println!("{}", serde_json::to_string_pretty(&identity)?);
-        println!("access_token={auth_token}");
-        return Ok(());
-    }
-
-    let state = AppState {
-        identity: identity.clone(),
-        auth_token,
-    };
-
+    let state = AppState { identity: identity.clone(), auth_token, workers: Arc::new(Mutex::new(HashMap::new())) };
     let app = Router::new()
         .route("/health", get(health))
         .route("/ws", any(websocket))
-        .with_state(state.clone());
-
+        .route("/vnc/{session_id}", any(vnc_websocket))
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    info!(
-        device_id = %identity.device_id,
-        device_name = %identity.device_name,
-        platform = %identity.platform,
-        listen = %args.listen,
-        "MSM agent control endpoint started"
-    );
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = signal::ctrl_c().await;
-            warn!("shutdown requested");
-        })
-        .await?;
-
+    info!(device_id=%identity.device_id, device_name=%identity.device_name, listen=%args.listen, "MSM Windows agent started");
+    axum::serve(listener, app).with_graceful_shutdown(async { let _ = signal::ctrl_c().await; warn!("shutdown requested"); }).await?;
     Ok(())
 }
