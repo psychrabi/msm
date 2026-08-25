@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "os:default",
-    "process:default"
+    "process:default",
+    "websocket:default"
   ]
 }
