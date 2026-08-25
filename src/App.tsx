@@ -4,6 +4,12 @@ import WebSocket from '@tauri-apps/plugin-websocket';
 import RFB from '@novnc/novnc';
 import './styles.css';
 
+type SecurityFailureEvent = Event & {
+  detail: {
+    reason: string;
+  };
+};
+
 type Session = {
   sessionId: string;
   username: string;
@@ -103,9 +109,7 @@ function isUnauthorizedError(error: unknown): boolean {
 
 function App() {
   const initialEndpoint = loadSavedEndpoint();
-  const [endpoint, setEndpoint] = useState(
-    initialEndpoint ?? 'ws://127.0.0.1:40123/ws',
-  );
+  const [endpoint, setEndpoint] = useState(initialEndpoint ?? 'ws://127.0.0.1:40123/ws');
   const [token, setToken] = useState('');
   const [rememberConnection, setRememberConnection] = useState(Boolean(initialEndpoint));
   const [socket, setSocket] = useState<WebSocket | null>(null);
@@ -133,31 +137,17 @@ function App() {
   const sessionsRef = useRef(sessions);
   const remoteStartRequestedRef = useRef(false);
 
-  useEffect(() => {
-    endpointRef.current = endpoint;
-  }, [endpoint]);
-
-  useEffect(() => {
-    tokenRef.current = token;
-  }, [token]);
-
-  useEffect(() => {
-    selectedSessionRef.current = selectedSession;
-  }, [selectedSession]);
-
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
+  useEffect(() => { endpointRef.current = endpoint; }, [endpoint]);
+  useEffect(() => { tokenRef.current = token; }, [token]);
+  useEffect(() => { selectedSessionRef.current = selectedSession; }, [selectedSession]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
   useEffect(() => {
     if (!initialEndpoint) return;
-
     let cancelled = false;
     void (async () => {
       try {
         let storedToken = await getCredential(initialEndpoint);
-
-        // One-time migration from the old localStorage implementation.
         if (!storedToken) {
           const legacyToken = localStorage.getItem(LEGACY_TOKEN_KEY);
           if (legacyToken) {
@@ -167,7 +157,6 @@ function App() {
             storedToken = legacyToken;
           }
         }
-
         if (!cancelled) {
           setToken(storedToken ?? '');
           setCredentialsReady(true);
@@ -175,18 +164,11 @@ function App() {
       } catch (credentialError) {
         if (!cancelled) {
           setCredentialsReady(true);
-          setError(
-            `Unable to access the Windows credential store: ${
-              credentialError instanceof Error ? credentialError.message : String(credentialError)
-            }`,
-          );
+          setError(`Unable to access the Windows credential store: ${credentialError instanceof Error ? credentialError.message : String(credentialError)}`);
         }
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [initialEndpoint]);
 
   function clearReconnectTimer() {
@@ -201,18 +183,13 @@ function App() {
     socketRef.current = null;
     setSocket(null);
     if (current) {
-      try {
-        await current.disconnect();
-      } catch {
-        // Already closed.
-      }
+      try { await current.disconnect(); } catch { /* Already closed. */ }
     }
   }
 
   function scheduleReconnect() {
     if (!reconnectEnabledRef.current || manualDisconnectRef.current || !tokenRef.current) return;
     if (reconnectTimerRef.current) return;
-
     setStatus('Reconnecting…');
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
@@ -231,29 +208,24 @@ function App() {
 
   async function connectAgent(isReconnect = false): Promise<void> {
     if (connectingRef.current || socketRef.current || !credentialsReady) return;
-
     const currentEndpoint = normalizeEndpoint(endpointRef.current);
     const currentToken = tokenRef.current.trim();
     if (!currentEndpoint || !currentToken) {
       setStatus('Disconnected');
       return;
     }
-
     connectingRef.current = true;
     manualDisconnectRef.current = false;
     setError('');
     setStatus(isReconnect ? 'Reconnecting…' : 'Connecting…');
     remoteStartRequestedRef.current = false;
-
     try {
       const connection = await WebSocket.connect(currentEndpoint, {
         headers: { Authorization: `Bearer ${currentToken}` },
       });
-
       endpointRef.current = currentEndpoint;
       setEndpoint(currentEndpoint);
       setToken(currentToken);
-
       if (rememberConnection) {
         saveEndpoint(currentEndpoint);
         await setCredential(currentEndpoint, currentToken);
@@ -261,17 +233,13 @@ function App() {
       } else {
         reconnectEnabledRef.current = false;
       }
-
       socketRef.current = connection;
       setSocket(connection);
       clearReconnectTimer();
-
       connection.addListener((message) => {
         if (message.type !== 'Text') return;
-
         try {
           const payload = JSON.parse(message.data) as AgentMessage;
-
           if (payload.type === 'hello') {
             setIdentity(payload.identity);
             setStatus('Connected');
@@ -279,29 +247,19 @@ function App() {
             void refreshSessions(connection);
             return;
           }
-
           if (payload.type === 'sessions') {
             setSessions(payload.sessions);
             sessionsRef.current = payload.sessions;
-            setSelectedSession((current) => {
-              if (current && payload.sessions.some((session) => session.sessionId === current)) {
-                return current;
-              }
-              return payload.sessions[0]?.sessionId ?? null;
-            });
+            setSelectedSession((current) => current && payload.sessions.some((session) => session.sessionId === current) ? current : payload.sessions[0]?.sessionId ?? null);
             return;
           }
-
           if (payload.type === 'remoteSession') {
-            // The agent must never open a desktop in response to connection alone.
-            // Accept a remote-session response only for an explicit user request.
             if (!remoteStartRequestedRef.current) return;
             remoteStartRequestedRef.current = false;
             setRemote(payload.session);
             setConnectingRemote(false);
             return;
           }
-
           if (payload.type === 'error') {
             remoteStartRequestedRef.current = false;
             setConnectingRemote(false);
@@ -313,7 +271,6 @@ function App() {
       });
     } catch (connectError) {
       setStatus('Disconnected');
-
       if (isUnauthorizedError(connectError)) {
         await deleteCredential(currentEndpoint).catch(() => undefined);
         clearSavedEndpoint();
@@ -322,9 +279,7 @@ function App() {
         setToken('');
         setError('Agent authentication failed (401). Enter a new access token.');
       } else {
-        setError(
-          connectError instanceof Error ? connectError.message : String(connectError),
-        );
+        setError(connectError instanceof Error ? connectError.message : String(connectError));
         scheduleReconnect();
       }
     } finally {
@@ -346,14 +301,12 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    return () => {
-      manualDisconnectRef.current = true;
-      clearReconnectTimer();
-      if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
-      void socketRef.current?.disconnect();
-      rfbRef.current?.disconnect();
-    };
+  useEffect(() => () => {
+    manualDisconnectRef.current = true;
+    clearReconnectTimer();
+    if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
+    void socketRef.current?.disconnect();
+    rfbRef.current?.disconnect();
   }, []);
 
   async function disconnect() {
@@ -361,12 +314,10 @@ function App() {
     reconnectEnabledRef.current = false;
     clearReconnectTimer();
     remoteStartRequestedRef.current = false;
-
     if (remoteReconnectTimerRef.current) {
       clearTimeout(remoteReconnectTimerRef.current);
       remoteReconnectTimerRef.current = null;
     }
-
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     setRemote(null);
@@ -394,12 +345,10 @@ function App() {
     const current = socketRef.current;
     const sessionId = selectedSessionRef.current;
     if (!current || !sessionId) return;
-
     if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
     setError('');
     setConnectingRemote(true);
     remoteStartRequestedRef.current = true;
-
     try {
       await current.send(JSON.stringify({ type: 'startSession', sessionId }));
     } catch {
@@ -413,15 +362,12 @@ function App() {
 
   useEffect(() => {
     if (!remote || !viewerRef.current) return;
-
     rfbRef.current?.disconnect();
     viewerRef.current.replaceChildren();
-
     const controlEndpoint = new URL(normalizeEndpoint(endpoint));
     controlEndpoint.pathname = `/vnc/${remote.sessionId}`;
     controlEndpoint.search = `?token=${encodeURIComponent(token)}`;
     controlEndpoint.protocol = controlEndpoint.protocol === 'wss:' ? 'wss:' : 'ws:';
-
     const rfb = new RFB(viewerRef.current, controlEndpoint.toString(), {
       credentials: { password: remote.vncPassword },
     });
@@ -429,30 +375,25 @@ function App() {
     rfb.resizeSession = false;
     rfb.viewOnly = viewOnly;
     rfb.showDotCursor = true;
-
     rfb.addEventListener('connect', () => setError(''));
     rfb.addEventListener('disconnect', () => {
       rfbRef.current = null;
       setRemote(null);
       setConnectingRemote(false);
       if (manualDisconnectRef.current || !socketRef.current) return;
-
       setError('Remote desktop disconnected. Reconnecting…');
       if (remoteReconnectTimerRef.current) clearTimeout(remoteReconnectTimerRef.current);
       remoteReconnectTimerRef.current = setTimeout(() => {
         remoteReconnectTimerRef.current = null;
         const sessionId = selectedSessionRef.current;
-        const stillExists = sessionsRef.current.some(
-          (session) => session.sessionId === sessionId,
-        );
+        const stillExists = sessionsRef.current.some((session) => session.sessionId === sessionId);
         if (sessionId && stillExists && socketRef.current) void startRemoteSession();
       }, REMOTE_RECONNECT_DELAY_MS);
     });
-    rfb.addEventListener('securityfailure', (event: RFB.SecurityFailureEvent) => {
+    rfb.addEventListener('securityfailure', (event: SecurityFailureEvent) => {
       setError(`VNC authentication failed: ${event.detail.reason}`);
       setConnectingRemote(false);
     });
-
     rfbRef.current = rfb;
     return () => rfb.disconnect();
   }, [remote, endpoint, token, viewOnly]);
@@ -463,152 +404,28 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <div className="eyebrow">MSM · WINDOWS</div>
-          <h1>Remote Monitor &amp; Control</h1>
-        </div>
-        <div className="device-status">
-          <span className={`status-dot ${status === 'Connected' ? 'online' : ''}`} />
-          {identity ? `${identity.deviceName} · ${status}` : status}
-        </div>
+        <div><div className="eyebrow">MSM · WINDOWS</div><h1>Remote Monitor &amp; Control</h1></div>
+        <div className="device-status"><span className={`status-dot ${status === 'Connected' ? 'online' : ''}`} />{identity ? `${identity.deviceName} · ${status}` : status}</div>
       </header>
-
       <section className="connection-bar">
-        <input
-          value={endpoint}
-          onChange={(event) => setEndpoint(event.target.value)}
-          placeholder="ws://host:40123/ws"
-          disabled={Boolean(socket)}
-        />
-        <input
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
-          placeholder="Agent access token"
-          type="password"
-          disabled={Boolean(socket)}
-        />
-        {socket ? (
-          <button className="secondary-button" type="button" onClick={() => void disconnect()}>
-            Disconnect
-          </button>
-        ) : (
-          <button
-            className="connect-button"
-            type="button"
-            onClick={() => void connectAgent(false)}
-            disabled={!endpoint || !token || !credentialsReady || status === 'Connecting…' || status === 'Reconnecting…'}
-          >
-            {status === 'Reconnecting…' ? 'Reconnecting…' : 'Connect'}
-          </button>
-        )}
-        <label className="remember-connection">
-          <input
-            type="checkbox"
-            checked={rememberConnection}
-            onChange={(event) => {
-              const checked = event.target.checked;
-              setRememberConnection(checked);
-              reconnectEnabledRef.current = checked;
-              if (checked && token.trim()) {
-                const currentEndpoint = normalizeEndpoint(endpoint);
-                saveEndpoint(currentEndpoint);
-                void setCredential(currentEndpoint, token.trim()).catch((credentialError) => {
-                  setError(`Unable to save credentials: ${credentialError}`);
-                });
-              } else if (!checked) {
-                const currentEndpoint = normalizeEndpoint(endpoint);
-                clearSavedEndpoint();
-                void deleteCredential(currentEndpoint).catch(() => undefined);
-              }
-            }}
-          />
-          <span>Remember</span>
-        </label>
-        {hasSavedConnection && !socket && (
-          <button className="secondary-button" type="button" onClick={() => void forgetConnection()}>
-            Forget
-          </button>
-        )}
+        <input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="ws://host:40123/ws" disabled={Boolean(socket)} />
+        <input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Agent access token" type="password" disabled={Boolean(socket)} />
+        {socket ? <button className="secondary-button" type="button" onClick={() => void disconnect()}>Disconnect</button> : <button className="connect-button" type="button" onClick={() => void connectAgent(false)} disabled={!endpoint || !token || !credentialsReady || status === 'Connecting…' || status === 'Reconnecting…'}>{status === 'Reconnecting…' ? 'Reconnecting…' : 'Connect'}</button>}
+        <label className="remember-connection"><input type="checkbox" checked={rememberConnection} onChange={(event) => { const checked = event.target.checked; setRememberConnection(checked); reconnectEnabledRef.current = checked; if (checked && token.trim()) { const currentEndpoint = normalizeEndpoint(endpoint); saveEndpoint(currentEndpoint); void setCredential(currentEndpoint, token.trim()).catch((credentialError) => setError(`Unable to save credentials: ${credentialError}`)); } else if (!checked) { const currentEndpoint = normalizeEndpoint(endpoint); clearSavedEndpoint(); void deleteCredential(currentEndpoint).catch(() => undefined); } }} /><span>Remember</span></label>
+        {hasSavedConnection && !socket && <button className="secondary-button" type="button" onClick={() => void forgetConnection()}>Forget</button>}
       </section>
-
       {error && <div className="error-banner">{error}</div>}
-
       <section className="workspace">
         <aside className="sidebar">
-          <div className="section-heading">
-            <span>Windows sessions</span>
-            <span className="count">{sessions.length}</span>
-          </div>
+          <div className="section-heading"><span>Windows sessions</span><span className="count">{sessions.length}</span></div>
           <div className="seat-list">
-            {sessions.map((session) => (
-              <button
-                className={`seat-card ${selectedSession === session.sessionId ? 'selected' : ''}`}
-                key={session.sessionId}
-                type="button"
-                onClick={() => {
-                  rfbRef.current?.disconnect();
-                  rfbRef.current = null;
-                  remoteStartRequestedRef.current = false;
-                  setSelectedSession(session.sessionId);
-                  setRemote(null);
-                }}
-              >
-                <span className={`status-dot ${session.state === 'active' ? 'active' : 'locked'}`} />
-                <span className="seat-copy">
-                  <strong>{session.username}</strong>
-                  <span>
-                    Session {session.sessionId}
-                    {session.seatId ? ` · ${session.seatId}` : ''}
-                  </span>
-                </span>
-                <span className="seat-state">{session.state}</span>
-              </button>
-            ))}
-            {!sessions.length && (
-              <div className="empty-state">
-                Connect to a Windows MSM agent to discover its logged-in user sessions.
-              </div>
-            )}
+            {sessions.map((session) => <button className={`seat-card ${selectedSession === session.sessionId ? 'selected' : ''}`} key={session.sessionId} type="button" onClick={() => { rfbRef.current?.disconnect(); rfbRef.current = null; remoteStartRequestedRef.current = false; setSelectedSession(session.sessionId); setRemote(null); }}><span className={`status-dot ${session.state === 'active' ? 'active' : 'locked'}`} /><span className="seat-copy"><strong>{session.username}</strong><span>Session {session.sessionId}{session.seatId ? ` · ${session.seatId}` : ''}</span></span><span className="seat-state">{session.state}</span></button>)}
+            {!sessions.length && <div className="empty-state">Connect to a Windows MSM agent to discover its logged-in user sessions.</div>}
           </div>
         </aside>
-
         <section className="viewer-panel">
-          <div className="viewer-toolbar">
-            <div>
-              <span className="label">Selected session</span>
-              <strong>
-                {selected ? `${selected.username} · Session ${selected.sessionId}` : 'None'}
-              </strong>
-            </div>
-            <div className="viewer-actions">
-              <label className="mode-toggle">
-                <input
-                  type="checkbox"
-                  checked={viewOnly}
-                  onChange={(event) => setViewOnly(event.target.checked)}
-                />
-                <span>View only</span>
-              </label>
-              <button
-                className="connect-button"
-                type="button"
-                disabled={!selected || connectingRemote || !socket}
-                onClick={() => void startRemoteSession()}
-              >
-                {connectingRemote ? 'Starting…' : remote ? 'Reconnect desktop' : 'Start remote session'}
-              </button>
-            </div>
-          </div>
-
-          <div className={`viewer-surface ${remote ? 'active' : ''}`} ref={viewerRef}>
-            {!remote && (
-              <div className="viewer-placeholder">
-                <div className="placeholder-icon">▣</div>
-                <h2>{selected ? `Ready for ${selected.username}` : 'Remote desktop'}</h2>
-                <p>Select a Windows session and start a remote session.</p>
-              </div>
-            )}
-          </div>
+          <div className="viewer-toolbar"><div><span className="label">Selected session</span><strong>{selected ? `${selected.username} · Session ${selected.sessionId}` : 'None'}</strong></div><div className="viewer-actions"><label className="mode-toggle"><input type="checkbox" checked={viewOnly} onChange={(event) => setViewOnly(event.target.checked)} /><span>View only</span></label><button className="connect-button" type="button" disabled={!selected || connectingRemote || !socket} onClick={() => void startRemoteSession()}>{connectingRemote ? 'Starting…' : remote ? 'Reconnect desktop' : 'Start remote session'}</button></div></div>
+          <div className={`viewer-surface ${remote ? 'active' : ''}`} ref={viewerRef}>{!remote && <div className="viewer-placeholder"><div className="placeholder-icon">▣</div><h2>{selected ? `Ready for ${selected.username}` : 'Remote desktop'}</h2><p>Select a Windows session and start a remote session.</p></div>}</div>
         </section>
       </section>
     </main>
