@@ -50,6 +50,18 @@ fn credential_delete(key: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn clipboard_get() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.get_text().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clipboard_set(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -61,7 +73,9 @@ pub fn run() {
             app_info,
             credential_set,
             credential_get,
-            credential_delete
+            credential_delete,
+            clipboard_get,
+            clipboard_set
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
