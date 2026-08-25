@@ -12,8 +12,10 @@ export function Checkbox({ className, ...props }: ComponentPropsWithoutRef<typeo
       )}
       {...props}
     >
-      <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current">
-        <Check className="h-4 w-4" />
+      <CheckboxPrimitive.Indicator asChild>
+        <span className="flex items-center justify-center text-current">
+          <Check className="h-4 w-4" />
+        </span>
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   );
