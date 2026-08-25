@@ -32,18 +32,20 @@ if ($Existing) {
 
 $Binary = Join-Path $InstallDir "msm-agent.exe"
 $BinPath = '"{0}" --listen 0.0.0.0:40123' -f $Binary
-& sc.exe create $ServiceName binPath= $BinPath start= auto obj= LocalSystem DisplayName= "MSM Agent" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to create service '$ServiceName' (sc.exe exit code $LASTEXITCODE)."
-}
 
-& sc.exe description $ServiceName "MSM multiseat remote monitor and control agent" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to configure service description (sc.exe exit code $LASTEXITCODE)."
-}
+# New-Service avoids the quoting/argument parsing ambiguity of sc.exe when
+# BinaryPathName contains a quoted executable path plus command-line arguments.
+New-Service `
+    -Name $ServiceName `
+    -BinaryPathName $BinPath `
+    -DisplayName "MSM Agent" `
+    -Description "MSM multiseat remote monitor and control agent" `
+    -StartupType Automatic | Out-Null
 
-$Service = Get-Service -Name $ServiceName -ErrorAction Stop
 $ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+if (-not $ServiceConfig) {
+    throw "MSMAgent service was not created."
+}
 if ($ServiceConfig.StartName -ne "LocalSystem") {
     throw "MSMAgent was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem."
 }
