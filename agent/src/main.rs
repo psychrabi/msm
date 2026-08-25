@@ -6,19 +6,42 @@ use serde::{Deserialize, Serialize};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, signal, sync::Mutex, time::{sleep, Duration}};
 use tracing::{info, warn};
 use uuid::Uuid;
-const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION"); const DEFAULT_LISTEN: &str = "127.0.0.1:40123"; const FIRST_VNC_PORT: u16 = 5901;
-#[derive(Debug,Parser)] #[command(name="msm-agent",version,about="MSM Windows machine agent")] struct Args{#[arg(long,default_value=DEFAULT_LISTEN)]listen:SocketAddr,#[arg(long)]print_identity:bool}
-#[derive(Debug,Clone,Serialize,Deserialize)] #[serde(rename_all="camelCase")] struct DeviceIdentity{device_id:Uuid,device_name:String,platform:String,architecture:String,agent_version:String}
-#[derive(Debug,Clone,Serialize,Deserialize)] #[serde(rename_all="camelCase")] struct SessionInfo{session_id:String,username:String,state:String,seat_id:Option<String>,display:Option<String>}
-#[derive(Debug,Clone,Serialize)] #[serde(rename_all="camelCase")] struct RemoteSession{session_id:String,port:u16,vnc_password:String}
-#[derive(Clone)] struct AppState{identity:DeviceIdentity,auth_token:String,workers:Arc<Mutex<HashMap<u32,RemoteSession>>>}
-#[derive(Debug,Serialize)] #[serde(tag="type",rename_all="camelCase")] enum ServerMessage{Hello{identity:DeviceIdentity},Sessions{sessions:Vec<SessionInfo>},RemoteSession{session:RemoteSession},Error{message:String}}
-#[derive(Debug,Deserialize)] #[serde(tag="type",rename_all="camelCase")] enum ClientMessage{ListSessions,StartSession{#[serde(rename="sessionId")] session_id:String},Ping}
-#[derive(Debug,Deserialize)] struct TokenQuery{token:String}
-fn identity_path()->Result<PathBuf,io::Error>{let base=dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?;Ok(base.join("MSM").join("agent").join("identity.json"))}
-fn token_path()->Result<PathBuf,io::Error>{let base=dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?;Ok(base.join("MSM").join("agent").join("access-token"))}
-fn load_or_create_identity()->Result<DeviceIdentity,Box<dyn std::error::Error>>{let path=identity_path()?;if let Ok(contents)=fs::read_to_string(&path){return Ok(serde_json::from_str(&contents)?)}let identity=DeviceIdentity{device_id:Uuid::new_v4(),device_name:hostname(),platform:env::consts::OS.to_owned(),architecture:env::consts::ARCH.to_owned(),agent_version:AGENT_VERSION.to_owned()};if let Some(parent)=path.parent(){fs::create_dir_all(parent)?}fs::write(path,serde_json::to_string_pretty(&identity)?)?;Ok(identity)}
-fn load_or_create_token()->Result<String,Box<dyn std::error::Error>>{let path=token_path()?;if let Ok(token)=fs::read_to_string(&path){let token=token.trim().to_owned();if !token.is_empty(){return Ok(token)}}let token=Uuid::new_v4().to_string();if let Some(parent)=path.parent(){fs::create_dir_all(parent)?}fs::write(path,&token)?;Ok(token)}
+
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_LISTEN: &str = "127.0.0.1:40123";
+const FIRST_VNC_PORT: u16 = 5901;
+
+#[derive(Debug, Parser, Clone)]
+#[command(name="msm-agent",version,about="MSM Windows machine agent")]
+struct Args {
+    #[arg(long, default_value=DEFAULT_LISTEN)] listen: SocketAddr,
+    #[arg(long)] print_identity: bool,
+    #[arg(long, hide = true)] service: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+struct DeviceIdentity { device_id: Uuid, device_name: String, platform: String, architecture: String, agent_version: String }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+struct SessionInfo { session_id: String, username: String, state: String, seat_id: Option<String>, display: Option<String> }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all="camelCase")]
+struct RemoteSession { session_id: String, port: u16, vnc_password: String }
+#[derive(Clone)]
+struct AppState { identity: DeviceIdentity, auth_token: String, workers: Arc<Mutex<HashMap<u32, RemoteSession>>> }
+#[derive(Debug, Serialize)]
+#[serde(tag="type", rename_all="camelCase")]
+enum ServerMessage { Hello { identity: DeviceIdentity }, Sessions { sessions: Vec<SessionInfo> }, RemoteSession { session: RemoteSession }, Error { message: String } }
+#[derive(Debug, Deserialize)]
+#[serde(tag="type", rename_all="camelCase")]
+enum ClientMessage { ListSessions, StartSession { #[serde(rename="sessionId")] session_id: String }, Ping }
+#[derive(Debug, Deserialize)] struct TokenQuery { token: String }
+
+fn identity_path() -> Result<PathBuf, io::Error> { let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?; Ok(base.join("MSM").join("agent").join("identity.json")) }
+fn token_path() -> Result<PathBuf, io::Error> { let base = dirs::data_local_dir().or_else(dirs::data_dir).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,"unable to determine local data directory"))?; Ok(base.join("MSM").join("agent").join("access-token")) }
+fn load_or_create_identity() -> Result<DeviceIdentity, Box<dyn std::error::Error>> { let path=identity_path()?; if let Ok(contents)=fs::read_to_string(&path){return Ok(serde_json::from_str(&contents)?)} let identity=DeviceIdentity{device_id:Uuid::new_v4(),device_name:hostname(),platform:env::consts::OS.to_owned(),architecture:env::consts::ARCH.to_owned(),agent_version:AGENT_VERSION.to_owned()}; if let Some(parent)=path.parent(){fs::create_dir_all(parent)?} fs::write(path,serde_json::to_string_pretty(&identity)?)?; Ok(identity) }
+fn load_or_create_token() -> Result<String, Box<dyn std::error::Error>> { let path=token_path()?; if let Ok(token)=fs::read_to_string(&path){let token=token.trim().to_owned();if !token.is_empty(){return Ok(token)}} let token=Uuid::new_v4().to_string();if let Some(parent)=path.parent(){fs::create_dir_all(parent)?}fs::write(path,&token)?;Ok(token) }
 fn hostname()->String{env::var("COMPUTERNAME").unwrap_or_else(|_|"unknown".to_owned())}
 fn authorized(headers:&HeaderMap,token:&str)->bool{let expected=format!("Bearer {token}");headers.get(AUTHORIZATION).and_then(|v|v.to_str().ok()).is_some_and(|v|v==expected)}
 async fn health(State(state):State<AppState>,headers:HeaderMap)->impl IntoResponse{if !authorized(&headers,&state.auth_token){return(StatusCode::UNAUTHORIZED,Json(serde_json::json!({"error":"unauthorized"})))}(StatusCode::OK,Json(serde_json::json!({"status":"ok","device":state.identity})))}
@@ -32,6 +55,58 @@ async fn discover_windows_sessions()->Vec<SessionInfo>{tokio::task::spawn_blocki
 #[cfg(windows)] fn query_username(session_id:u32)->Option<String>{use windows::{core::PWSTR,Win32::System::RemoteDesktop::{WTS_CURRENT_SERVER_HANDLE,WTSFreeMemory,WTSQuerySessionInformationW,WTSUserName}};unsafe{let mut buffer=PWSTR(std::ptr::null_mut());let mut bytes=0u32;WTSQuerySessionInformationW(Some(WTS_CURRENT_SERVER_HANDLE),session_id,WTSUserName,&mut buffer,&mut bytes).ok()?;let chars=std::slice::from_raw_parts(buffer.as_ptr(),(bytes as usize/2).saturating_sub(1));let name=String::from_utf16_lossy(chars);WTSFreeMemory(buffer.as_ptr() as _);Some(name)}}
 #[cfg(not(windows))] fn windows_sessions()->Result<Vec<SessionInfo>,Box<dyn std::error::Error>>{Ok(Vec::new())}
 async fn start_session(state:&AppState,session_id:&str)->Result<RemoteSession,Box<dyn std::error::Error+Send+Sync>>{let id:u32=session_id.parse()?;if let Some(existing)=state.workers.lock().await.get(&id).cloned(){return Ok(existing)}let port=FIRST_VNC_PORT+(id%1000)as u16;let password=state.auth_token.chars().take(8).collect::<String>();spawn_worker(id,port,&password)?;for _ in 0..30{if TcpStream::connect(("127.0.0.1",port)).await.is_ok(){let session=RemoteSession{session_id:session_id.to_owned(),port,vnc_password:password};state.workers.lock().await.insert(id,session.clone());return Ok(session)}sleep(Duration::from_millis(100)).await}Err(format!("VNC worker for session {id} did not become ready").into())}
-#[cfg(windows)] fn spawn_worker(session_id:u32,port:u16,password:&str)->Result<(),Box<dyn std::error::Error+Send+Sync>>{use std::{ffi::OsStr,os::windows::ffi::OsStrExt};use windows::{core::PWSTR,Win32::Foundation::CloseHandle,Win32::System::RemoteDesktop::WTSQueryUserToken,Win32::System::Threading::{CreateProcessAsUserW,PROCESS_CREATION_FLAGS,PROCESS_INFORMATION,STARTUPINFOW}};unsafe{let mut token=Default::default();WTSQueryUserToken(session_id,&mut token)?;let exe=env::current_exe()?.with_file_name("msm-agent-worker.exe");let command=format!("\"{}\" --session-id {} --port {} --password {}",exe.display(),session_id,port,password);let mut command_w:Vec<u16>=OsStr::new(&command).encode_wide().chain(Some(0)).collect();let desktop:Vec<u16>=OsStr::new("winsta0\\default").encode_wide().chain(Some(0)).collect();let mut startup=STARTUPINFOW::default();startup.cb=std::mem::size_of::<STARTUPINFOW>()as u32;startup.lpDesktop=PWSTR(desktop.as_ptr()as*mut u16);let mut process=PROCESS_INFORMATION::default();CreateProcessAsUserW(Some(token),None,Some(PWSTR(command_w.as_mut_ptr())),None,None,false,PROCESS_CREATION_FLAGS(0),None,None,&startup,&mut process)?;CloseHandle(process.hThread)?;CloseHandle(process.hProcess)?;CloseHandle(token)?;Ok(())}}
+#[cfg(windows)] fn spawn_worker(session_id:u32,port:u16,password:&str)->Result<(),Box<dyn std::error::Error+Send+Sync>>{use std::{ffi::OsStr,os::windows::ffi::OsStrExt};use windows::{core::PWSTR,Win32::Foundation::CloseHandle,Win32::System::RemoteDesktop::WTSQueryUserToken,Win32::System::Threading::{CreateProcessAsUserW,PROCESS_CREATION_FLAGS,PROCESS_INFORMATION,STARTUPINFOW}};unsafe{let mut token=Default::default();WTSQueryUserToken(session_id,&mut token).map_err(|e|format!("WTSQueryUserToken(session {session_id}) failed: {e}"))?;let exe=env::current_exe()?.with_file_name("msm-agent-worker.exe");let command=format!("\"{}\" --session-id {} --port {} --password {}",exe.display(),session_id,port,password);let mut command_w:Vec<u16>=OsStr::new(&command).encode_wide().chain(Some(0)).collect();let desktop:Vec<u16>=OsStr::new("winsta0\\default").encode_wide().chain(Some(0)).collect();let mut startup=STARTUPINFOW::default();startup.cb=std::mem::size_of::<STARTUPINFOW>()as u32;startup.lpDesktop=PWSTR(desktop.as_ptr()as*mut u16);let mut process=PROCESS_INFORMATION::default();CreateProcessAsUserW(Some(token),None,Some(PWSTR(command_w.as_mut_ptr())),None,None,false,PROCESS_CREATION_FLAGS(0),None,None,&startup,&mut process).map_err(|e|format!("CreateProcessAsUserW(session {session_id}) failed: {e}"))?;CloseHandle(process.hThread)?;CloseHandle(process.hProcess)?;CloseHandle(token)?;Ok(())}}
 #[cfg(not(windows))] fn spawn_worker(_session_id:u32,_port:u16,_password:&str)->Result<(),Box<dyn std::error::Error+Send+Sync>>{Err("Windows only".into())}
-#[tokio::main] async fn main()->Result<(),Box<dyn std::error::Error>>{tracing_subscriber::fmt::init();let args=Args::parse();let identity=load_or_create_identity()?;let auth_token=load_or_create_token()?;if args.print_identity{println!("{}",serde_json::to_string_pretty(&identity)?);println!("access_token={auth_token}");return Ok(())}let state=AppState{identity:identity.clone(),auth_token,workers:Arc::new(Mutex::new(HashMap::new()))};let app=Router::new().route("/health",get(health)).route("/ws",any(websocket)).route("/vnc/{session_id}",any(vnc_websocket)).with_state(state);let listener=tokio::net::TcpListener::bind(args.listen).await?;info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%args.listen,"MSM Windows agent started");axum::serve(listener,app).with_graceful_shutdown(async{let _=signal::ctrl_c().await;warn!("shutdown requested")}).await?;Ok(())}
+
+async fn run_server(args: Args, shutdown: Option<tokio::sync::oneshot::Receiver<()>>) -> Result<(), Box<dyn std::error::Error>> {
+    let identity=load_or_create_identity()?;
+    let auth_token=load_or_create_token()?;
+    let state=AppState{identity:identity.clone(),auth_token,workers:Arc::new(Mutex::new(HashMap::new()))};
+    let app=Router::new().route("/health",get(health)).route("/ws",any(websocket)).route("/vnc/{session_id}",any(vnc_websocket)).with_state(state);
+    let listener=tokio::net::TcpListener::bind(args.listen).await?;
+    info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%args.listen,"MSM Windows agent started");
+    match shutdown {
+        Some(mut receiver) => axum::serve(listener,app).with_graceful_shutdown(async move { let _=receiver.await; }).await?,
+        None => axum::serve(listener,app).with_graceful_shutdown(async{let _=signal::ctrl_c().await;warn!("shutdown requested")}).await?,
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_as_windows_service(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::mpsc;
+    use windows_service::{define_windows_service, service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType}, service_control_handler::{self, ServiceControlHandlerResult}, service_dispatcher};
+    define_windows_service!(ffi_service_main, service_main);
+    fn service_main(_arguments: Vec<std::ffi::OsString>) {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        let status_handle = service_control_handler::register("MSMAgent", move |control_event| match control_event {
+            ServiceControl::Stop | ServiceControl::Shutdown => { let _=shutdown_tx.send(()); ServiceControlHandlerResult::NoError }
+            _ => ServiceControlHandlerResult::NoError,
+        }).expect("failed to register service control handler");
+        status_handle.set_service_status(ServiceStatus{service_type:ServiceType::OWN_PROCESS,current_state:ServiceState::Running,controls_accepted:ServiceControlAccept::STOP|ServiceControlAccept::SHUTDOWN,exit_code:ServiceExitCode::Win32(0),checkpoint:0,wait_hint:std::time::Duration::default(),process_id:None}).expect("failed to set service running status");
+        let runtime=tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("failed to create runtime");
+        let (_tx,rx)=tokio::sync::oneshot::channel::<()>();
+        let bridge=runtime.block_on(async move { let (tx, mut shutdown)=tokio::sync::oneshot::channel::<()>(); std::thread::spawn(move || { let _=shutdown_rx.recv(); let _=tx.send(()); }); run_server(args,Some(shutdown)).await });
+        let exit_code=if bridge.is_ok(){0}else{1};
+        let _=status_handle.set_service_status(ServiceStatus{service_type:ServiceType::OWN_PROCESS,current_state:ServiceState::Stopped,controls_accepted:ServiceControlAccept::empty(),exit_code:ServiceExitCode::Win32(exit_code),checkpoint:0,wait_hint:std::time::Duration::default(),process_id:None});
+    }
+    service_dispatcher::start("MSMAgent", ffi_service_main)?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main()->Result<(),Box<dyn std::error::Error>>{
+    tracing_subscriber::fmt::init();
+    let args=Args::parse();
+    let identity=load_or_create_identity()?;
+    let auth_token=load_or_create_token()?;
+    if args.print_identity { println!("{}",serde_json::to_string_pretty(&identity)?); println!("access_token={auth_token}"); return Ok(()) }
+    #[cfg(windows)] if args.service { return run_as_windows_service(args); }
+    #[cfg(not(windows))] if args.service { return Err("--service is only supported on Windows".into()); }
+    let state=AppState{identity:identity.clone(),auth_token,workers:Arc::new(Mutex::new(HashMap::new()))};
+    let app=Router::new().route("/health",get(health)).route("/ws",any(websocket)).route("/vnc/{session_id}",any(vnc_websocket)).with_state(state);
+    let listener=tokio::net::TcpListener::bind(args.listen).await?;
+    info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%args.listen,"MSM Windows agent started");
+    axum::serve(listener,app).with_graceful_shutdown(async{let _=signal::ctrl_c().await;warn!("shutdown requested")}).await?;
+    Ok(())
+}
