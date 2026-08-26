@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -23,42 +22,32 @@ import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { cn } from "./lib/utils";
+import {
+  agentId,
+  connectionKey,
+  gridColumns,
+  isUnauthorizedError,
+  isValidAgentIp,
+  normalizeAgentIp,
+  normalizeEndpoint,
+  type AgentConnection,
+  type AgentMessage,
+  type RemoteConnection,
+} from "./lib/agent-protocol";
+import {
+  addSavedAgent,
+  clearLegacySavedConnection,
+  deleteCredential,
+  getCredential,
+  getSavedAgents,
+  hasSavedAgents,
+  LEGACY_ENDPOINT_KEY,
+  LEGACY_TOKEN_KEY,
+  removeSavedAgent,
+  setCredential,
+} from "./lib/agent-storage";
 import "./styles.css";
 
-type Session = {
-  sessionId: string;
-  username: string;
-  state: string;
-  seatId?: string | null;
-  display?: string | null;
-};
-type DeviceIdentity = {
-  deviceId: string;
-  deviceName: string;
-  platform: string;
-  architecture: string;
-  agentVersion: string;
-};
-type RemoteSession = { sessionId: string; port: number; vncPassword: string };
-type AgentMessage =
-  | { type: "hello"; identity: DeviceIdentity }
-  | { type: "sessions"; sessions: Session[] }
-  | { type: "remoteSession"; session: RemoteSession }
-  | { type: "error"; message: string };
-type AgentStatus =
-  "Disconnected" | "Connecting…" | "Connected" | "Reconnecting…";
-type AgentConnection = {
-  id: string;
-  endpoint: string;
-  token: string;
-  identity: DeviceIdentity | null;
-  sessions: Session[];
-  status: AgentStatus;
-  error: string;
-  remembered: boolean;
-};
-type SavedAgent = { endpoint: string };
-type RemoteConnection = RemoteSession & { agentId: string; username: string };
 type RfbClipboardApi = RFB & {
   clipboardPasteFrom(text: string): void;
   addEventListener(
@@ -67,116 +56,8 @@ type RfbClipboardApi = RFB & {
   ): void;
 };
 
-const SAVED_AGENTS_KEY = "msm.saved-agents";
-const LEGACY_ENDPOINT_KEY = "msm.saved-agent-connection";
-const LEGACY_TOKEN_KEY = "msm.saved-agent-token";
-const DEFAULT_AGENT_PORT = 40123;
 const RECONNECT_DELAY_MS = 3000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
-
-function normalizeEndpoint(endpoint: string): string {
-  const value = endpoint.trim();
-  if (!value) return value;
-  if (/^https?:\/\//i.test(value)) {
-    const ws = value.replace(/^http/i, "ws").replace(/\/$/, "");
-    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
-  }
-  if (/^wss?:\/\//i.test(value)) {
-    const ws = value.replace(/\/$/, "");
-    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
-  }
-  return `ws://${value.replace(/\/$/, "")}/ws`;
-}
-function normalizeAgentIp(ip: string): string {
-  const value = ip.trim();
-  if (!value) return "";
-  const host =
-    value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
-  return normalizeEndpoint(`ws://${host}:${DEFAULT_AGENT_PORT}/ws`);
-}
-function isValidAgentIp(ip: string): boolean {
-  const value = ip.trim();
-  if (!value || /[/:\s]/.test(value)) return false;
-  const octets = value.split(".");
-  return (
-    octets.length === 4 &&
-    octets.every(
-      (part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255,
-    )
-  );
-}
-function agentId(endpoint: string) {
-  return normalizeEndpoint(endpoint);
-}
-function loadSavedAgents(): SavedAgent[] {
-  try {
-    const raw = localStorage.getItem(SAVED_AGENTS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed))
-        return parsed
-          .filter((item): item is SavedAgent =>
-            Boolean(
-              item &&
-              typeof item === "object" &&
-              typeof (item as SavedAgent).endpoint === "string",
-            ),
-          )
-          .map((item) => ({ endpoint: normalizeEndpoint(item.endpoint) }));
-    }
-    const legacy = localStorage.getItem(LEGACY_ENDPOINT_KEY);
-    return legacy ? [{ endpoint: normalizeEndpoint(legacy) }] : [];
-  } catch {
-    return [];
-  }
-}
-function saveSavedAgents(agents: SavedAgent[]) {
-  localStorage.setItem(SAVED_AGENTS_KEY, JSON.stringify(agents));
-}
-function addSavedAgent(endpoint: string) {
-  const normalized = normalizeEndpoint(endpoint);
-  saveSavedAgents([
-    ...loadSavedAgents().filter((agent) => agent.endpoint !== normalized),
-    { endpoint: normalized },
-  ]);
-}
-function removeSavedAgent(endpoint: string) {
-  saveSavedAgents(
-    loadSavedAgents().filter(
-      (agent) => agent.endpoint !== normalizeEndpoint(endpoint),
-    ),
-  );
-}
-function credentialKey(endpoint: string) {
-  return `agent-token:${normalizeEndpoint(endpoint)}`;
-}
-async function getCredential(endpoint: string) {
-  return invoke<string | null>("credential_get", {
-    key: credentialKey(endpoint),
-  });
-}
-async function setCredential(endpoint: string, token: string) {
-  await invoke("credential_set", {
-    key: credentialKey(endpoint),
-    secret: token,
-  });
-}
-async function deleteCredential(endpoint: string) {
-  await invoke("credential_delete", { key: credentialKey(endpoint) });
-}
-function isUnauthorizedError(error: unknown) {
-  return /\b401\b|unauthorized|authentication failed|not authorized/i.test(
-    error instanceof Error ? error.message : String(error),
-  );
-}
-function connectionKey(agent: string, session: string) {
-  return `${agent}::${session}`;
-}
-function gridColumns(count: number) {
-  if (count > 12) return "grid-cols-5";
-  if (count > 6) return "grid-cols-4";
-  return "grid-cols-3";
-}
 
 function RemoteViewer({
   remote,
@@ -311,10 +192,10 @@ export default function MultiAgentApp() {
     initialLoadRef.current = true;
     let cancelled = false;
     void (async () => {
-      let saved = loadSavedAgents();
+      let saved = getSavedAgents();
       const legacyEndpoint = localStorage.getItem(LEGACY_ENDPOINT_KEY);
       const legacyToken = localStorage.getItem(LEGACY_TOKEN_KEY);
-      if (legacyEndpoint && !localStorage.getItem(SAVED_AGENTS_KEY))
+      if (legacyEndpoint && saved.length === 0)
         saved = [{ endpoint: normalizeEndpoint(legacyEndpoint) }];
       const loaded: AgentConnection[] = [];
       for (const item of saved) {
@@ -352,10 +233,7 @@ export default function MultiAgentApp() {
           });
         }
       }
-      if (legacyEndpoint) {
-        localStorage.removeItem(LEGACY_ENDPOINT_KEY);
-        localStorage.removeItem(LEGACY_TOKEN_KEY);
-      }
+      if (legacyEndpoint) clearLegacySavedConnection();
       if (cancelled) return;
       setAgents(loaded);
       for (const agent of loaded)
@@ -712,7 +590,7 @@ export default function MultiAgentApp() {
       remote,
     ]),
   );
-  const hasSavedAgents = loadSavedAgents().length > 0;
+  const savedAgentsPresent = hasSavedAgents();
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
@@ -1237,7 +1115,7 @@ export default function MultiAgentApp() {
                       No agents configured.
                     </p>
                   )}
-                  {hasSavedAgents && (
+                  {savedAgentsPresent && (
                     <p className="pt-2 text-xs text-muted-foreground">
                       Configured agents are restored from the native credential
                       store on startup.
