@@ -142,9 +142,16 @@ const SessionViewerCard = memo(function SessionViewerCard({
               ) : (
                 <EyeOff className="h-4 w-4" />
               )}{" "}
-              View only
+              {fullscreenViewOnly ? "View only" : "Control"}
             </Label>
-            <Button variant="outline" size="sm" onClick={actions.closeFullscreen}>
+            <span className="text-[10px] text-muted-foreground">
+              Ctrl+Shift+V toggles mode · Ctrl+Shift+F or Esc exits
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={actions.closeFullscreen}
+            >
               <Minimize2 className="h-4 w-4" /> Exit fullscreen
             </Button>
             <Button

@@ -1,4 +1,9 @@
-﻿import { useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  register,
+  unregisterAll,
+} from "@tauri-apps/plugin-global-shortcut";
 import { isValidAgentIp } from "./lib/agent-protocol";
 import { hasSavedAgents } from "./lib/agent-storage";
 import { useAgentConnections } from "./hooks/useAgentConnections";
@@ -44,6 +49,43 @@ export default function MultiAgentApp() {
     setFullscreenKey(null);
     setFullscreenViewOnly(true);
   }
+
+  // Drive real OS fullscreen from the viewer state so every exit path
+  // (button, disconnect, shortcut, remote close) restores the window.
+  const isAppFullscreen = fullscreenKey !== null;
+  useEffect(() => {
+    void getCurrentWindow()
+      .setFullscreen(isAppFullscreen)
+      .catch(() => undefined);
+  }, [isAppFullscreen]);
+
+  // Global shortcuts only while a viewer is fullscreen:
+  //   Ctrl+Shift+V  toggle view-only / control
+  //   Ctrl+Shift+F  exit fullscreen
+  // Escape also exits while the window has focus.
+  useEffect(() => {
+    if (!isAppFullscreen) return;
+    const exitFullscreen = () => {
+      setFullscreenKey(null);
+      setFullscreenViewOnly(true);
+    };
+    void register("CommandOrControl+Shift+V", (event) => {
+      if (event.state !== "Pressed") return;
+      setFullscreenViewOnly((viewOnly) => !viewOnly);
+    }).catch(() => undefined);
+    void register("CommandOrControl+Shift+F", (event) => {
+      if (event.state !== "Pressed") return;
+      exitFullscreen();
+    }).catch(() => undefined);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") exitFullscreen();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      void unregisterAll().catch(() => undefined);
+    };
+  }, [isAppFullscreen]);
   async function handleDisconnectAgent(id: string) {
     if (fullscreenKey?.startsWith(`${id}::`)) closeFullscreen();
     await disconnectAgentConnection(id);

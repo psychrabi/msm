@@ -136,9 +136,12 @@ export function RemoteViewer({
     if (rfbRef.current) rfbRef.current.viewOnly = viewOnly;
   }, [viewOnly]);
   return (
-    <div ref={containerRef} className="vnc-surface h-full w-full min-h-0">
+    <div className="relative h-full w-full min-h-0">
+      {/* noVNC owns this node's children exclusively — never render
+          React children into it or they will fight over the DOM. */}
+      <div ref={containerRef} className="vnc-surface absolute inset-0" />
       {loadingModule && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black">
           <p className="text-xs text-muted-foreground">Loading viewer…</p>
         </div>
       )}
