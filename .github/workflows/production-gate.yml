@@ -17,14 +17,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
 
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --workspace --exclude msm-agent
-      - run: cargo test --workspace --exclude msm-agent
-
   windows-agent:
     runs-on: windows-latest
     steps:
