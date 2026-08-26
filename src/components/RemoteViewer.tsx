@@ -1,9 +1,6 @@
-import { useEffect, useRef } from "react";
-import RFB from "@novnc/novnc";
-import {
-  normalizeEndpoint,
-  type RemoteConnection,
-} from "../lib/agent-protocol";
+import { useEffect, useRef, useState } from "react";
+import type RFB from "@novnc/novnc";
+import { normalizeEndpoint, type RemoteConnection } from "../lib/agent-protocol";
 
 type RfbClipboardApi = RFB & {
   clipboardPasteFrom(text: string): void;
@@ -34,6 +31,7 @@ export function RemoteViewer({
   const viewOnlyRef = useRef(viewOnly);
   const onDisconnectRef = useRef(onDisconnect);
   const onErrorRef = useRef(onError);
+  const [loadingModule, setLoadingModule] = useState(true);
   useEffect(() => {
     viewOnlyRef.current = viewOnly;
   }, [viewOnly]);
@@ -47,37 +45,16 @@ export function RemoteViewer({
     const container = containerRef.current;
     if (!container) return;
     disposingRef.current = false;
+    let disposed = false;
+    let rfb: RFB | null = null;
     const controlEndpoint = new URL(normalizeEndpoint(endpoint));
     controlEndpoint.pathname = `/vnc/${remote.sessionId}`;
     controlEndpoint.search = `token=${encodeURIComponent(token)}`;
     controlEndpoint.protocol =
       controlEndpoint.protocol === "wss:" ? "wss:" : "ws:";
     container.replaceChildren();
-    const rfb = new RFB(container, controlEndpoint.toString(), {
-      credentials: { password: remote.vncPassword },
-    });
-    const clipboardRfb = rfb as RfbClipboardApi;
-    rfb.scaleViewport = true;
-    rfb.resizeSession = false;
-    rfb.viewOnly = viewOnly;
-    rfb.showDotCursor = true;
-    rfb.addEventListener("connect", () => onErrorRef.current(""));
-    clipboardRfb.addEventListener("clipboard", (event) => {
-      if (navigator.clipboard)
-        void navigator.clipboard
-          .writeText(event.detail.text)
-          .catch(() => undefined);
-    });
-    rfb.addEventListener("securityfailure", (event) =>
-      onErrorRef.current(
-        `VNC authentication failed: ${event.detail.reason ?? "Unknown reason"}`,
-      ),
-    );
-    rfb.addEventListener("disconnect", (event) => {
-      if (!disposingRef.current && event.detail.clean)
-        onDisconnectRef.current();
-    });
-    rfbRef.current = rfb;
+    setLoadingModule(true);
+
     const handlePaste = (event: ClipboardEvent) => {
       if (viewOnlyRef.current || !event.clipboardData || !rfbRef.current)
         return;
@@ -87,19 +64,70 @@ export function RemoteViewer({
       (rfbRef.current as RfbClipboardApi).clipboardPasteFrom(text);
     };
     container.addEventListener("paste", handlePaste);
+    // Batch rescale requests so dragging the window doesn't queue one
+    // rescale per resize event.
+    let resizeFrame = 0;
     const resizeObserver = new ResizeObserver(() => {
-      if (rfbRef.current === rfb) rfb.scaleViewport = true;
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        if (rfbRef.current === rfb && rfb) rfb.scaleViewport = true;
+      });
     });
     resizeObserver.observe(container);
+
+    // noVNC is large and only needed once a viewer actually opens;
+    // load it on demand so app startup stays fast.
+    void (async () => {
+      try {
+        const { default: RFBClass } = await import("@novnc/novnc");
+        if (disposed) return;
+        rfb = new RFBClass(container, controlEndpoint.toString(), {
+          credentials: { password: remote.vncPassword },
+        });
+        const clipboardRfb = rfb as RfbClipboardApi;
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.viewOnly = viewOnly;
+        rfb.showDotCursor = true;
+        rfb.addEventListener("connect", () => onErrorRef.current(""));
+        clipboardRfb.addEventListener("clipboard", (event) => {
+          if (navigator.clipboard)
+            void navigator.clipboard
+              .writeText(event.detail.text)
+              .catch(() => undefined);
+        });
+        rfb.addEventListener("securityfailure", (event) =>
+          onErrorRef.current(
+            `VNC authentication failed: ${event.detail.reason ?? "Unknown reason"}`,
+          ),
+        );
+        rfb.addEventListener("disconnect", (event) => {
+          if (!disposingRef.current && event.detail.clean)
+            onDisconnectRef.current();
+        });
+        rfbRef.current = rfb;
+      } catch {
+        if (!disposed)
+          onErrorRef.current("Failed to load the VNC viewer component.");
+      } finally {
+        if (!disposed) setLoadingModule(false);
+      }
+    })();
+
     return () => {
+      disposed = true;
       disposingRef.current = true;
       container.removeEventListener("paste", handlePaste);
       resizeObserver.disconnect();
+      if (resizeFrame) cancelAnimationFrame(resizeFrame);
       if (rfbRef.current === rfb) rfbRef.current = null;
-      try {
-        rfb.disconnect();
-      } catch {
-        /* already disconnected */
+      if (rfb) {
+        try {
+          rfb.disconnect();
+        } catch {
+          /* already disconnected */
+        }
       }
       container.replaceChildren();
     };
@@ -108,6 +136,12 @@ export function RemoteViewer({
     if (rfbRef.current) rfbRef.current.viewOnly = viewOnly;
   }, [viewOnly]);
   return (
-    <div ref={containerRef} className="vnc-surface h-full w-full min-h-0" />
+    <div ref={containerRef} className="vnc-surface h-full w-full min-h-0">
+      {loadingModule && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black">
+          <p className="text-xs text-muted-foreground">Loading viewer…</p>
+        </div>
+      )}
+    </div>
   );
 }
