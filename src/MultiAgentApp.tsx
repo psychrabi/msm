@@ -129,13 +129,7 @@ export default function MultiAgentApp() {
           onRemoveAgent={(id) => void removeAgent(id)}
         />
       )}
-      {activePage === "about" && (
-        <AboutPage
-          agentCount={agents.length}
-          connectedAgentCount={connectedAgentCount}
-          remoteViewerCount={remoteConnections.length}
-        />
-      )}
+      {activePage === "about" && <AboutPage />}
     </div>
   );
 }
