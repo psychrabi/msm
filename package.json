@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "installer:app": "tauri build",
+    "installer:agent": "powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-agent.ps1"
   },
   "dependencies": {
     "@novnc/novnc": "^1.7.0",
