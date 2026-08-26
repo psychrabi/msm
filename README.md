@@ -11,7 +11,7 @@ msm/
 ├── agent/          # headless Rust Windows machine agent + per-session worker
 ├── src-tauri/      # Tauri desktop viewer backend
 ├── src/            # React/TypeScript viewer UI
-└── docs/           # architecture and implementation documentation
+└── docs/           # architecture and release documentation
 ```
 
 The **viewer** is installed on the operator computer. The **agent** is installed independently on every Windows computer that should be remotely monitored or controlled.
@@ -20,7 +20,7 @@ The **viewer** is installed on the operator computer. The **agent** is installed
                  MSM Viewer
               Tauri + React
                     │
-             authenticated WS
+                  WSS
                     │
         ┌───────────┼───────────┐
         ▼           ▼           ▼
@@ -28,8 +28,6 @@ The **viewer** is installed on the operator computer. The **agent** is installed
         │           │           │
      Sessions    Sessions    Sessions
 ```
-
-There is intentionally no CI/CD. Development is local and Git-based.
 
 ## Windows-only scope
 
@@ -43,10 +41,10 @@ The current product target is **Windows only**. Linux and macOS implementations 
 - `rustvncserver` for RFB/VNC server functionality.
 - `xcap` for Windows desktop capture.
 - `enigo` for Windows keyboard/mouse input injection.
-- `windows` crate for Windows Terminal Services/session APIs, user-session process creation, and session clipboard integration.
+- `windows` crate for Windows Terminal Services/session APIs, user-session process creation, DPAPI, and clipboard integration.
 - `@novnc/novnc` for the viewer-side VNC client.
-- Native Windows credential storage for persisted agent access tokens.
-- Prefer established Tauri plugins and mature Rust crates over custom infrastructure.
+- Native Windows credential storage for viewer-side persisted agent credentials.
+- Native rustls TLS for Agent transport encryption.
 
 ## Multiseat model
 
@@ -63,109 +61,89 @@ Device
 │       └── msm-agent-worker → VNC :5903
 ```
 
-The Windows service remains running independently of the interactive user sessions. It discovers active sessions and launches workers in the corresponding user's Windows session. If a worker exits unexpectedly while its session remains active, the agent is responsible for restoring that worker.
+The Windows service remains running independently of interactive user sessions. It discovers eligible sessions and launches workers in the corresponding user's Windows session. If a worker exits unexpectedly, bounded watchdog backoff restores it without creating an unbounded spawn loop.
 
-The session ID is the durable identity. VNC ports and worker process IDs are transient implementation details owned by the agent.
+## Agent security
 
-## Agent
-
-The standalone Windows agent provides:
-
-- Persistent device identity.
-- Persistent local development access token.
-- Authenticated health endpoint.
-- Authenticated WebSocket control endpoint.
-- Windows Terminal Services session discovery.
-- Per-session worker startup using the logged-in user's Windows token.
-- Per-session worker lifecycle and respawn.
-- Per-session VNC server lifecycle.
-- Authenticated WebSocket-to-VNC proxy.
-- Bidirectional text clipboard bridging between the Windows user session and VNC clients.
-
-The worker runs inside the target user's Windows session. This is important: screen capture, clipboard access, and input injection are performed in the target session rather than by a single machine-wide desktop process.
-
-### Local development
-
-Print the device identity and token:
-
-```powershell
-cargo run -p msm-agent -- --print-identity
-```
-
-Start the agent directly:
-
-```powershell
-cargo run -p msm-agent -- --listen 0.0.0.0:40123
-```
-
-The viewer connects to:
+Production service mode requires TLS certificate and private key files:
 
 ```text
-ws://<agent-ip>:40123/ws
+C:\ProgramData\MSM\agent\tls\cert.pem
+C:\ProgramData\MSM\agent\tls\key.pem
 ```
 
-### Windows service installation
+The Agent token is stored with Windows DPAPI machine protection. Legacy plaintext token files are migrated on startup. Worker VNC passwords are random and independent from the Agent token. Viewer VNC connections use short-lived session-bound tickets rather than placing the long-lived Agent token in the VNC URL.
 
-Build both binaries and use:
+The worker VNC port range is loopback-only by design and is blocked by the installer firewall rule from inbound network access. Remote access should use the authenticated Agent WSS proxy.
+
+## Local development
+
+The Agent can still be run without TLS for local development:
+
+```powershell
+cargo run -p msm-agent -- --listen 127.0.0.1:40123
+```
+
+This development mode is intentionally not a production network configuration.
+
+For a TLS Agent, provide both files:
+
+```powershell
+cargo run -p msm-agent -- \
+  --listen 0.0.0.0:40123 \
+  --tls-cert C:\secure\cert.pem \
+  --tls-key C:\secure\key.pem
+```
+
+The Viewer production endpoint is:
+
+```text
+wss://<agent-host>:40123/ws
+```
+
+## Windows service installation
+
+Build both binaries and provision the TLS assets out-of-band:
 
 ```powershell
 .\packaging\windows\install-agent.ps1 `
   -AgentBinaryPath .\target\release\msm-agent.exe `
-  -WorkerBinaryPath .\target\release\msm-agent-worker.exe
+  -WorkerBinaryPath .\target\release\msm-agent-worker.exe `
+  -TlsCertificatePath C:\secure\msm-agent-cert.pem `
+  -TlsPrivateKeyPath C:\secure\msm-agent-key.pem
 ```
 
-The installer registers `msm-agent` as a LocalSystem Windows service. The service is the machine-level supervisor; it is not the desktop/VNC process itself. It uses the logged-in user's Windows session token to launch one `msm-agent-worker` for each active user session and keeps those workers under supervision.
+The installer registers `msm-agent` as a LocalSystem Windows service, configures automatic service recovery, applies restrictive data-directory ACLs, permits the TLS Agent port, and blocks inbound access to the internal VNC port range.
 
-The installer also permits the agent control port and blocks inbound access to the internal VNC port range. The VNC ports are implementation endpoints, not the intended remote-access interface.
+Subsequent upgrades preserve the existing TLS certificate and key when replacement paths are omitted.
 
 ## Viewer
 
 Install dependencies and start the Tauri application:
 
 ```bash
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
 
-On the first connection, enter the agent WebSocket URL and the access token printed by `--print-identity`.
+On the first connection, enter the Agent WSS URL and the access token printed by `--print-identity` during controlled provisioning. Enable **Remember** to persist the connection in the viewer's native credential store.
 
-Enable **Remember** to persist the connection. The endpoint is stored as viewer configuration and the access token is stored in the native Windows credential store rather than browser/local storage. When the viewer starts again, it retrieves the credential and reconnects automatically without requiring the token to be entered again.
+Saved credentials are associated with the Agent endpoint. **Forget** removes the saved endpoint and its native credential. If an Agent rejects a saved credential with `401 Unauthorized`, the viewer clears that credential instead of retrying indefinitely.
 
-Saved credentials are associated with the agent endpoint, so different managed computers can use different access tokens. **Forget** removes the saved endpoint and its native credential. If an agent rejects a saved credential with `401 Unauthorized`, the viewer clears that credential and requires a new token instead of repeatedly retrying an invalid credential.
+Sessions are **not** opened automatically when the Agent connects. Switching pages or sessions does not implicitly reconnect or replace an existing remote viewer.
 
-The monitoring view keeps active sessions in a sidebar and independently connected VNC viewers in a responsive grid. Sessions are **not** opened automatically when the agent connects. Switching pages or sessions does not implicitly reconnect or replace an existing remote viewer.
+The default viewer mode is **View only**. Control mode can be enabled explicitly.
 
-The default viewer mode is **View only**. Control mode can be enabled explicitly. Mouse and keyboard input are delivered through the selected user's worker session.
+## Production gates
 
-The viewer also bridges text clipboard data: remote clipboard updates are copied to the operator clipboard when permitted by the Tauri webview, and paste events in a controllable viewer are sent through noVNC to the remote session.
+GitHub Actions now validates:
 
-## Current remote desktop path
+- frontend dependency installation and production build;
+- workspace Rust compilation and tests;
+- Windows Agent release compilation;
+- Tauri application build;
+- Agent packaging script.
 
-```text
-Tauri Viewer
-    │
-    │ authenticated WebSocket control
-    ▼
-MSM Agent service (LocalSystem)
-    │
-    │ session ID + user token
-    ▼
-msm-agent-worker
-    │
-    ├── xcap → target desktop framebuffer
-    ├── Windows clipboard ↔ rustvncserver clipboard events
-    ├── rustvncserver → RFB
-    └── enigo ← keyboard/mouse
-    │
-    ▼
-Agent WebSocket VNC proxy
-    │
-    ▼
-noVNC in Viewer
-```
+The final release procedure is documented in [`docs/release-checklist.md`](docs/release-checklist.md), with security and operational details in [`docs/production-hardening.md`](docs/production-hardening.md).
 
-If the worker process exits while its Windows session is still active, the service recreates the worker. A worker is therefore not expected to be manually launched or kept alive by a visible console window.
-
-The first implementation captures the primary monitor at a modest fixed frame cadence. Remaining hardening work includes performance/dirty-region capture, multi-monitor support, richer key mapping, remote-session reconnect behavior after worker replacement, multi-agent management, transport encryption, credential provisioning/rotation, and production authorization/network policy.
-
-The development control/VNC endpoints are not a production Internet security boundary yet. Do not expose them directly to the public Internet.
+A production release additionally requires clean-machine installer testing, TLS certificate validation, Windows code signing, a representative soak test, and completion of every checklist item.
