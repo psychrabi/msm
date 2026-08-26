@@ -472,12 +472,23 @@ export function useAgentConnections() {
   }
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const refreshConnected = () => {
       for (const agent of agentsRef.current)
         if (runtimesRef.current.get(agent.id)?.socket)
           void refreshSessions(agent.id);
+    };
+    // Skip polling while the window is hidden; catch up immediately on return.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") refreshConnected();
     }, HEALTH_CHECK_INTERVAL_MS);
-    return () => clearInterval(interval);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshConnected();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
   useEffect(
     () => () => {
