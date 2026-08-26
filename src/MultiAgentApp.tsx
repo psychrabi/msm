@@ -29,6 +29,7 @@ type RfbClipboardApi = RFB & { clipboardPasteFrom(text: string): void; addEventL
 const SAVED_AGENTS_KEY = 'msm.saved-agents';
 const LEGACY_ENDPOINT_KEY = 'msm.saved-agent-connection';
 const LEGACY_TOKEN_KEY = 'msm.saved-agent-token';
+const DEFAULT_AGENT_PORT = 40123;
 const RECONNECT_DELAY_MS = 3000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 
@@ -38,6 +39,18 @@ function normalizeEndpoint(endpoint: string): string {
   if (/^https?:\/\//i.test(value)) { const ws = value.replace(/^http/i, 'ws').replace(/\/$/, ''); return ws.endsWith('/ws') ? ws : `${ws}/ws`; }
   if (/^wss?:\/\//i.test(value)) { const ws = value.replace(/\/$/, ''); return ws.endsWith('/ws') ? ws : `${ws}/ws`; }
   return `ws://${value.replace(/\/$/, '')}/ws`;
+}
+function normalizeAgentIp(ip: string): string {
+  const value = ip.trim();
+  if (!value) return '';
+  const host = value.includes(':') && !value.startsWith('[') ? `[${value}]` : value;
+  return normalizeEndpoint(`ws://${host}:${DEFAULT_AGENT_PORT}/ws`);
+}
+function isValidAgentIp(ip: string): boolean {
+  const value = ip.trim();
+  if (!value || /[/:\s]/.test(value)) return false;
+  const octets = value.split('.');
+  return octets.length === 4 && octets.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255);
 }
 function agentId(endpoint: string) { return normalizeEndpoint(endpoint); }
 function loadSavedAgents(): SavedAgent[] {
@@ -103,7 +116,6 @@ export default function MultiAgentApp() {
   const [agents, setAgents] = useState<AgentConnection[]>([]);
   const [endpointInput, setEndpointInput] = useState('');
   const [tokenInput, setTokenInput] = useState('');
-  const [rememberConnection, setRememberConnection] = useState(true);
   const [remoteConnections, setRemoteConnections] = useState<RemoteConnection[]>([]);
   const [connectingSessions, setConnectingSessions] = useState<Set<string>>(new Set());
   const [activePage, setActivePage] = useState<'monitoring' | 'settings' | 'about'>('monitoring');
@@ -156,7 +168,7 @@ export default function MultiAgentApp() {
     try {
       const connection = await WebSocket.connect(agent.endpoint, { headers: { Authorization: `Bearer ${agent.token.trim()}` } });
       socketsRef.current.set(id, connection); clearReconnectTimer(id);
-      if (agent.remembered) { addSavedAgent(agent.endpoint); await setCredential(agent.endpoint, agent.token.trim()); }
+      addSavedAgent(agent.endpoint); await setCredential(agent.endpoint, agent.token.trim());
       connection.addListener((message) => {
         if (message.type !== 'Text') return;
         try {
@@ -183,13 +195,15 @@ export default function MultiAgentApp() {
   useEffect(() => { connectAgentRef.current = connectAgent; });
 
   async function addAgent() {
-    const normalized = normalizeEndpoint(endpointInput); const token = tokenInput.trim();
-    if (!normalized || !token) { setGlobalError('Enter an agent endpoint and access token.'); return; }
+    const ip = endpointInput.trim();
+    const normalized = normalizeAgentIp(ip);
+    const token = tokenInput.trim();
+    if (!isValidAgentIp(ip) || !normalized || !token) { setGlobalError('Enter a valid agent IP address and access token.'); return; }
     const existing = agentsRef.current.find((agent) => agent.id === agentId(normalized));
-    if (existing) { updateAgent(existing.id, { token, remembered: rememberConnection, error: '' }); if (rememberConnection) { addSavedAgent(normalized); await setCredential(normalized, token); } setTimeout(() => void connectAgentRef.current(existing.id), 0); return; }
-    const next: AgentConnection = { id: agentId(normalized), endpoint: normalized, token, identity: null, sessions: [], status: 'Disconnected', error: '', remembered: rememberConnection };
+    if (existing) { updateAgent(existing.id, { token, remembered: true, error: '' }); addSavedAgent(normalized); await setCredential(normalized, token); setTimeout(() => void connectAgentRef.current(existing.id), 0); return; }
+    const next: AgentConnection = { id: agentId(normalized), endpoint: normalized, token, identity: null, sessions: [], status: 'Disconnected', error: '', remembered: true };
     setAgents((current) => [...current, next]);
-    if (rememberConnection) { addSavedAgent(normalized); await setCredential(normalized, token); }
+    addSavedAgent(normalized); await setCredential(normalized, token);
     setEndpointInput(''); setTokenInput(''); setActivePage('monitoring'); setTimeout(() => void connectAgentRef.current(next.id), 0);
   }
   async function disconnectAgent(id: string) {
@@ -243,7 +257,7 @@ export default function MultiAgentApp() {
       </aside>
       <main className="min-w-0 flex-1 overflow-auto"><div className="flex min-h-full flex-col"><div className="border-b px-5 py-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monitoring</p><h1 className="mt-1 text-xl font-semibold">Remote viewers</h1><p className="mt-1 text-sm text-muted-foreground">{agents.length} agent{agents.length === 1 ? '' : 's'} · {totalSessions} sessions. Connect individual sessions from their viewer cards.</p></div>{globalError && <div className="border-b bg-destructive/10 px-5 py-2.5 text-sm text-destructive">{globalError}</div>}<section className="flex-1 p-5">{totalSessions === 0 ? <div className="flex min-h-[360px] items-center justify-center rounded-xl border bg-muted/10 text-center"><div><Monitor className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" /><p className="text-sm font-medium">No remote sessions available</p><p className="mt-1 text-xs text-muted-foreground">Connect an MSM agent to see its active sessions.</p></div></div> : <div className={cn('grid auto-rows-min gap-4', gridColumns(totalSessions))}>{agents.flatMap((agent) => agent.sessions.map((session) => ({ agent, session }))).map(({ agent, session }) => { const key = connectionKey(agent.id, session.sessionId); const remote = connectedByKey.get(key); const connecting = connectingSessions.has(key); const isFullscreen = fullscreenKey === key; return <Card key={key} className={cn('flex min-h-0 flex-col overflow-hidden', isFullscreen && 'fixed inset-0 z-50 m-0 rounded-none border-0')}><CardHeader className="flex-row items-center justify-between space-y-0 border-b px-3 py-2"><div className="min-w-0"><CardTitle className="truncate text-sm">{session.username}</CardTitle><p className="truncate text-[11px] text-muted-foreground">{agent.identity?.deviceName ?? agent.endpoint} · Session {session.sessionId}</p></div><div className="flex items-center gap-1">{remote && <Button variant="ghost" size="icon" aria-label={`Fullscreen ${session.username}`} onClick={() => openFullscreen(key)}>{isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</Button>}{remote && <Button variant="ghost" size="icon" aria-label={`Disconnect ${session.username}`} onClick={() => disconnectRemote(agent.id, session.sessionId)}><X className="h-4 w-4" /></Button>}</div></CardHeader><CardContent className={cn('relative min-h-0 bg-black p-0 viewer-viewport', isFullscreen && 'rounded-none viewer-fullscreen')}>{remote ? <RemoteViewer remote={remote} endpoint={agent.endpoint} token={agent.token} viewOnly={isFullscreen ? fullscreenViewOnly : true} onDisconnect={() => disconnectRemote(agent.id, session.sessionId)} onError={setGlobalError} /> : <div className="flex h-full w-full items-center justify-center bg-black"><Button size="sm" disabled={agent.status !== 'Connected' || connecting} onClick={() => void startRemoteSession(agent.id, session.sessionId)}>{connecting ? 'Connecting…' : 'Connect'}</Button></div>}</CardContent>{isFullscreen && remote && <div className="absolute bottom-0 left-0 right-0 z-[60] flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur"><div className="text-sm"><span className="font-medium">{session.username}</span><span className="ml-2 text-muted-foreground">{agent.identity?.deviceName ?? agent.endpoint} · Session {session.sessionId}</span></div><div className="flex items-center gap-3"><Label className="flex items-center gap-2 text-sm"><Checkbox checked={fullscreenViewOnly} onCheckedChange={(checked: boolean | 'indeterminate') => setFullscreenViewOnly(checked === true)} />{fullscreenViewOnly ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />} View only</Label><Button variant="outline" size="sm" onClick={closeFullscreen}><Minimize2 className="h-4 w-4" /> Exit fullscreen</Button><Button variant="outline" size="sm" onClick={() => disconnectRemote(agent.id, session.sessionId)}><X className="h-4 w-4" /> Disconnect</Button></div></div>}</Card>; })}</div>}</section></div></main>
     </div>}
-    {activePage === 'settings' && <main className="flex-1 overflow-auto"><div className="mx-auto max-w-4xl p-6"><div className="mb-6"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings</p><h1 className="mt-1 text-2xl font-semibold">Agents</h1><p className="mt-1 text-sm text-muted-foreground">Add multiple MSM agents. Each endpoint keeps its own credential and connection.</p></div><div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]"><Card><CardHeader><CardTitle>Add agent</CardTitle></CardHeader><CardContent className="space-y-4"><div className="space-y-2"><Label htmlFor="agent-endpoint">Endpoint</Label><Input id="agent-endpoint" placeholder="ws://192.168.1.10:40123/ws" value={endpointInput} onChange={(event) => setEndpointInput(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="agent-token">Access token</Label><Input id="agent-token" type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} /></div><Label className="flex items-center gap-2"><Checkbox checked={rememberConnection} onCheckedChange={(checked: boolean | 'indeterminate') => setRememberConnection(checked === true)} /> Remember this agent</Label><Button className="w-full" onClick={() => void addAgent()} disabled={!endpointInput.trim() || !tokenInput.trim()}><Plus className="h-4 w-4" /> Add and connect</Button></CardContent></Card><Card><CardHeader><CardTitle>Configured agents</CardTitle></CardHeader><CardContent className="space-y-2">{agents.length ? agents.map((agent) => <div key={agent.id} className="rounded-lg border p-3"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.identity?.deviceName ?? agent.endpoint}</p><p className="truncate text-xs text-muted-foreground">{agent.endpoint}</p></div><Badge variant={agent.status === 'Connected' ? 'default' : 'outline'}>{agent.status}</Badge></div><div className="mt-3 flex gap-2"><Button size="sm" variant="outline" disabled={agent.status === 'Connected' || !agent.token} onClick={() => void connectAgent(agent.id)}>Connect</Button><Button size="sm" variant="outline" disabled={agent.status !== 'Connected'} onClick={() => void disconnectAgent(agent.id)}>Disconnect</Button><Button size="sm" variant="ghost" onClick={() => void removeAgent(agent.id)}>Forget</Button></div></div>) : <p className="py-8 text-center text-sm text-muted-foreground">No agents configured.</p>}{hasSavedAgents && <p className="pt-2 text-xs text-muted-foreground">Remembered endpoints are restored from the native credential store on startup.</p>}</CardContent></Card></div></div></main>}
+    {activePage === 'settings' && <main className="flex-1 overflow-auto"><div className="mx-auto max-w-4xl p-6"><div className="mb-6"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings</p><h1 className="mt-1 text-2xl font-semibold">Agents</h1><p className="mt-1 text-sm text-muted-foreground">Add multiple MSM agents. Enter the agent's IP address and access token. Agents are always remembered and reconnect automatically.</p></div><div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]"><Card><CardHeader><CardTitle>Add agent</CardTitle></CardHeader><CardContent className="space-y-4"><div className="space-y-2"><Label htmlFor="agent-ip">Agent IP address</Label><Input id="agent-ip" inputMode="numeric" autoComplete="off" placeholder="192.168.1.10" value={endpointInput} onChange={(event) => setEndpointInput(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="agent-token">Access token</Label><Input id="agent-token" type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} /></div><Button className="w-full" onClick={() => void addAgent()} disabled={!isValidAgentIp(endpointInput) || !tokenInput.trim()}><Plus className="h-4 w-4" /> Add and connect</Button></CardContent></Card><Card><CardHeader><CardTitle>Configured agents</CardTitle></CardHeader><CardContent className="space-y-2">{agents.length ? agents.map((agent) => <div key={agent.id} className="rounded-lg border p-3"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{agent.identity?.deviceName ?? agent.endpoint}</p><p className="truncate text-xs text-muted-foreground">{agent.endpoint}</p></div><Badge variant={agent.status === 'Connected' ? 'default' : 'outline'}>{agent.status}</Badge></div><div className="mt-3 flex gap-2"><Button size="sm" variant="outline" disabled={agent.status === 'Connected' || !agent.token} onClick={() => void connectAgent(agent.id)}>Connect</Button><Button size="sm" variant="outline" disabled={agent.status !== 'Connected'} onClick={() => void disconnectAgent(agent.id)}>Disconnect</Button><Button size="sm" variant="ghost" onClick={() => void removeAgent(agent.id)}>Forget</Button></div></div>) : <p className="py-8 text-center text-sm text-muted-foreground">No agents configured.</p>}{hasSavedAgents && <p className="pt-2 text-xs text-muted-foreground">Configured agents are restored from the native credential store on startup.</p>}</CardContent></Card></div></div></main>}
     {activePage === 'about' && <main className="flex flex-1 items-center justify-center p-6"><Card className="w-full max-w-2xl"><CardHeader><CardTitle>MSM Viewer</CardTitle></CardHeader><CardContent className="grid gap-3 text-sm"><div className="flex justify-between border-b pb-3"><span className="text-muted-foreground">Agents</span><span>{agents.length}</span></div><div className="flex justify-between border-b pb-3"><span className="text-muted-foreground">Connected</span><span>{connectedAgentCount}</span></div><div className="flex justify-between"><span className="text-muted-foreground">Remote viewers</span><span>{remoteConnections.length}</span></div></CardContent></Card></main>}
   </div>;
 }
