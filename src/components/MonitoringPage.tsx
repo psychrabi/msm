@@ -21,7 +21,7 @@ import {
 
 /** Fullscreen chrome appears when the cursor is within this many pixels
  *  of the top or bottom screen edge. */
-const EDGE_BAR_PX = 56;
+const EDGE_BAR_PX = 1;
 
 /** Intent-level actions for the monitoring surface. Passed as one
  *  stable object (identity held by a ref in MultiAgentApp) so memoized
@@ -69,9 +69,17 @@ const SessionViewerCard = memo(function SessionViewerCard({
             : null;
       setEdgeBar((current) => (current === zone ? current : zone));
     };
-    window.addEventListener("mousemove", onMove, { passive: true });
+    // Capture phase: noVNC's canvas handlers may stopPropagation() on
+    // bubbling mouse events, which would starve a normal window listener.
+    const options = { capture: true, passive: true } as const;
+    const onLeaveWindow = (event: MouseEvent) => {
+      if (!event.relatedTarget) setEdgeBar(null);
+    };
+    window.addEventListener("mousemove", onMove, options);
+    window.addEventListener("mouseout", onLeaveWindow, options);
     return () => {
-      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mousemove", onMove, options);
+      window.removeEventListener("mouseout", onLeaveWindow, options);
     };
   }, [isFullscreen]);
   const topBarVisible = edgeBar === "top";
