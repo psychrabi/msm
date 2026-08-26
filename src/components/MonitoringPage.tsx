@@ -15,7 +15,6 @@ import { RemoteViewer } from "./RemoteViewer";
 import { cn } from "../lib/utils";
 import {
   connectionKey,
-  gridColumns,
   type AgentConnection,
   type RemoteConnection,
 } from "../lib/agent-protocol";
@@ -220,12 +219,7 @@ export function MonitoringPage({
               </div>
             </div>
           ) : (
-            <div
-              className={cn(
-                "grid auto-rows-min gap-4",
-                gridColumns(totalSessions),
-              )}
-            >
+            <div className="viewer-grid">
               {agents
                 .flatMap((agent) =>
                   agent.sessions.map((session) => ({ agent, session })),

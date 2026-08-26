@@ -72,11 +72,6 @@ export function agentId(endpoint: string) {
 export function connectionKey(agent: string, session: string) {
   return `${agent}::${session}`;
 }
-export function gridColumns(count: number) {
-  if (count > 12) return "grid-cols-5";
-  if (count > 6) return "grid-cols-4";
-  return "grid-cols-3";
-}
 export function isUnauthorizedError(error: unknown) {
   return /\b401\b|unauthorized|authentication failed|not authorized/i.test(
     error instanceof Error ? error.message : String(error),

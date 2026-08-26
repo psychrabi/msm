@@ -84,4 +84,12 @@ button, input { font: inherit; }
 .viewer-viewport { width: 100%; aspect-ratio: 16 / 9; }
 .viewer-viewport.viewer-fullscreen { height: 100%; aspect-ratio: auto; }
 
+/* Responsive viewer grid: as many columns as fit while keeping every card
+   at least ~400px wide (16:9 keeps it usable); cards stretch to fill. */
+.viewer-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+}
+
 @media (max-width: 900px) { body { min-width: 0; } }
