@@ -26,6 +26,46 @@ import {
 const RECONNECT_DELAY_MS = 3000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 
+/** Per-viewer lifecycle flags for one session on one agent. */
+type ViewerRuntime = {
+  /** Viewer was closed by the user; automatic reconnects must not reopen it. */
+  manualDisconnected: boolean;
+  /** A startSession request is in flight and awaiting a remoteSession reply. */
+  pendingRequest: boolean;
+};
+
+/**
+ * Per-agent connection state machine. One entry per known agent replaces
+ * the previous five parallel collections (sockets, timers, manual
+ * disconnects, pending requests, connecting attempts), so every invariant —
+ * "a reconnect timer only exists while disconnected and remembered",
+ * "a socket only exists while connected", "viewer-level manual disconnects
+ * survive agent reconnects" — lives in one place.
+ */
+type AgentRuntime = {
+  socket: WebSocket | null;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  /** A connect attempt is currently in flight. */
+  connecting: boolean;
+  /** The agent itself was manually disconnected (not its viewers). */
+  manualDisconnected: boolean;
+  viewers: Map<string, ViewerRuntime>;
+};
+
+function newAgentRuntime(): AgentRuntime {
+  return {
+    socket: null,
+    reconnectTimer: null,
+    connecting: false,
+    manualDisconnected: false,
+    viewers: new Map(),
+  };
+}
+
+function newViewerRuntime(): ViewerRuntime {
+  return { manualDisconnected: false, pendingRequest: false };
+}
+
 /**
  * Owns the full agent-connection lifecycle: sockets, reconnect timers,
  * credentials, remembered endpoints, and active remote (VNC) viewers.
@@ -40,15 +80,26 @@ export function useAgentConnections() {
     new Set(),
   );
   const [globalError, setGlobalError] = useState("");
-  const socketsRef = useRef(new Map<string, WebSocket>());
-  const reconnectTimersRef = useRef(
-    new Map<string, ReturnType<typeof setTimeout>>(),
-  );
-  const manualDisconnectRef = useRef(new Set<string>());
-  const pendingRemoteRequestsRef = useRef(new Set<string>());
-  const connectingAgentsRef = useRef(new Set<string>());
+  const runtimesRef = useRef(new Map<string, AgentRuntime>());
   const agentsRef = useRef<AgentConnection[]>([]);
   const initialLoadRef = useRef(false);
+
+  function getRuntime(id: string): AgentRuntime {
+    let runtime = runtimesRef.current.get(id);
+    if (!runtime) {
+      runtime = newAgentRuntime();
+      runtimesRef.current.set(id, runtime);
+    }
+    return runtime;
+  }
+  function getViewer(runtime: AgentRuntime, sessionId: string): ViewerRuntime {
+    let viewer = runtime.viewers.get(sessionId);
+    if (!viewer) {
+      viewer = newViewerRuntime();
+      runtime.viewers.set(sessionId, viewer);
+    }
+    return viewer;
+  }
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -121,13 +172,14 @@ export function useAgentConnections() {
     );
   }
   function clearReconnectTimer(id: string) {
-    const timer = reconnectTimersRef.current.get(id);
-    if (timer) clearTimeout(timer);
-    reconnectTimersRef.current.delete(id);
+    const runtime = getRuntime(id);
+    if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+    runtime.reconnectTimer = null;
   }
   async function disconnectAgentSocket(id: string) {
-    const socket = socketsRef.current.get(id);
-    socketsRef.current.delete(id);
+    const runtime = getRuntime(id);
+    const socket = runtime.socket;
+    runtime.socket = null;
     if (socket) {
       try {
         await socket.disconnect();
@@ -138,25 +190,23 @@ export function useAgentConnections() {
   }
   function scheduleReconnect(id: string) {
     const agent = agentsRef.current.find((item) => item.id === id);
+    const runtime = getRuntime(id);
     if (
       !agent ||
       !agent.remembered ||
       !agent.token ||
-      manualDisconnectRef.current.has(id) ||
-      reconnectTimersRef.current.has(id)
+      runtime.manualDisconnected ||
+      runtime.reconnectTimer
     )
       return;
     updateAgent(id, { status: "Reconnecting…" });
-    reconnectTimersRef.current.set(
-      id,
-      setTimeout(() => {
-        reconnectTimersRef.current.delete(id);
-        void connectAgent(id, true);
-      }, RECONNECT_DELAY_MS),
-    );
+    runtime.reconnectTimer = setTimeout(() => {
+      runtime.reconnectTimer = null;
+      void connectAgent(id, true);
+    }, RECONNECT_DELAY_MS);
   }
   async function refreshSessions(id: string) {
-    const socket = socketsRef.current.get(id);
+    const socket = runtimesRef.current.get(id)?.socket;
     if (!socket) return;
     try {
       await socket.send(JSON.stringify({ type: "listSessions" }));
@@ -167,19 +217,14 @@ export function useAgentConnections() {
   }
   async function connectAgent(id: string, isReconnect = false) {
     const agent = agentsRef.current.find((item) => item.id === id);
-    if (
-      !agent ||
-      connectingAgentsRef.current.has(id) ||
-      socketsRef.current.has(id) ||
-      !agent.token
-    )
-      return;
-    connectingAgentsRef.current.add(id);
+    const runtime = getRuntime(id);
+    if (!agent || runtime.connecting || runtime.socket || !agent.token) return;
 
     // Only clear an agent-level manual disconnect.
-    // Viewer-level manual disconnects use `${agentId}::${sessionId}`
+    // Viewer-level manual disconnects live on each viewer runtime
     // and must survive agent reconnects.
-    manualDisconnectRef.current.delete(id);
+    runtime.connecting = true;
+    runtime.manualDisconnected = false;
     updateAgent(id, {
       status: isReconnect ? "Reconnecting…" : "Connecting…",
       error: "",
@@ -188,7 +233,7 @@ export function useAgentConnections() {
       const connection = await WebSocket.connect(agent.endpoint, {
         headers: { Authorization: `Bearer ${agent.token.trim()}` },
       });
-      socketsRef.current.set(id, connection);
+      runtime.socket = connection;
       clearReconnectTimer(id);
       updateAgent(id, { status: "Connected", error: "" });
       addSavedAgent(agent.endpoint);
@@ -216,8 +261,9 @@ export function useAgentConnections() {
           }
           if (payload.type === "remoteSession") {
             const key = connectionKey(id, payload.session.sessionId);
-            if (!pendingRemoteRequestsRef.current.has(key)) return;
-            pendingRemoteRequestsRef.current.delete(key);
+            const viewer = runtime.viewers.get(payload.session.sessionId);
+            if (!viewer?.pendingRequest) return;
+            viewer.pendingRequest = false;
             setConnectingSessions((current) => {
               const next = new Set(current);
               next.delete(key);
@@ -278,7 +324,7 @@ export function useAgentConnections() {
         scheduleReconnect(id);
       }
     } finally {
-      connectingAgentsRef.current.delete(id);
+      runtime.connecting = false;
     }
   }
   const connectAgentRef = useRef(connectAgent);
@@ -319,12 +365,13 @@ export function useAgentConnections() {
     return true;
   }
   async function disconnectAgent(id: string) {
-    manualDisconnectRef.current.add(id);
+    const runtime = getRuntime(id);
+    runtime.manualDisconnected = true;
     clearReconnectTimer(id);
-    pendingRemoteRequestsRef.current.forEach((key) => {
-      if (key.startsWith(`${id}::`))
-        pendingRemoteRequestsRef.current.delete(key);
-    });
+    // Cancel any in-flight viewer requests, but keep their
+    // manualDisconnected flags so auto-reconnect stays suppressed.
+    for (const viewer of runtime.viewers.values())
+      viewer.pendingRequest = false;
     setConnectingSessions((current) => {
       const next = new Set(current);
       for (const key of next) if (key.startsWith(`${id}::`)) next.delete(key);
@@ -342,6 +389,7 @@ export function useAgentConnections() {
     await disconnectAgent(id);
     await deleteCredential(agent.endpoint).catch(() => undefined);
     removeSavedAgent(agent.endpoint);
+    runtimesRef.current.delete(id);
     setAgents((current) => current.filter((item) => item.id !== id));
   }
   async function startRemoteSession(
@@ -349,17 +397,18 @@ export function useAgentConnections() {
     sessionId: string,
     userInitiated = false,
   ) {
-    const socket = socketsRef.current.get(agentIdValue);
+    const runtime = getRuntime(agentIdValue);
+    const viewer = getViewer(runtime, sessionId);
     const key = connectionKey(agentIdValue, sessionId);
 
     // A user clicking "Connect" overrides a previous manual disconnect;
     // automatic reconnects after agent refresh must not.
-    if (userInitiated) manualDisconnectRef.current.delete(key);
+    if (userInitiated) viewer.manualDisconnected = false;
 
     if (
-      manualDisconnectRef.current.has(key) ||
-      !socket ||
-      pendingRemoteRequestsRef.current.has(key) ||
+      viewer.manualDisconnected ||
+      !runtime.socket ||
+      viewer.pendingRequest ||
       remoteConnections.some(
         (item) => item.agentId === agentIdValue && item.sessionId === sessionId,
       )
@@ -367,7 +416,7 @@ export function useAgentConnections() {
       return;
     }
 
-    pendingRemoteRequestsRef.current.add(key);
+    viewer.pendingRequest = true;
 
     setConnectingSessions((current) => {
       const next = new Set(current);
@@ -376,14 +425,14 @@ export function useAgentConnections() {
     });
 
     try {
-      await socket.send(
+      await runtime.socket.send(
         JSON.stringify({
           type: "startSession",
           sessionId,
         }),
       );
     } catch {
-      pendingRemoteRequestsRef.current.delete(key);
+      viewer.pendingRequest = false;
 
       setConnectingSessions((current) => {
         const next = new Set(current);
@@ -401,9 +450,12 @@ export function useAgentConnections() {
 
     // Remember that this viewer was intentionally disconnected.
     // Agent reconnect/session refresh must not automatically reconnect it.
-    manualDisconnectRef.current.add(key);
-
-    pendingRemoteRequestsRef.current.delete(key);
+    const runtime = runtimesRef.current.get(agentIdValue);
+    if (runtime) {
+      const viewer = getViewer(runtime, sessionId);
+      viewer.manualDisconnected = true;
+      viewer.pendingRequest = false;
+    }
 
     setConnectingSessions((current) => {
       const next = new Set(current);
@@ -422,16 +474,18 @@ export function useAgentConnections() {
   useEffect(() => {
     const interval = setInterval(() => {
       for (const agent of agentsRef.current)
-        if (socketsRef.current.has(agent.id)) void refreshSessions(agent.id);
+        if (runtimesRef.current.get(agent.id)?.socket)
+          void refreshSessions(agent.id);
     }, HEALTH_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
   }, []);
   useEffect(
     () => () => {
-      for (const timer of reconnectTimersRef.current.values())
-        clearTimeout(timer);
-      for (const socket of socketsRef.current.values())
-        void socket.disconnect().catch(() => undefined);
+      for (const runtime of runtimesRef.current.values()) {
+        if (runtime.reconnectTimer) clearTimeout(runtime.reconnectTimer);
+        if (runtime.socket)
+          void runtime.socket.disconnect().catch(() => undefined);
+      }
     },
     [],
   );
