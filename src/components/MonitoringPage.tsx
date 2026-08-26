@@ -1,4 +1,5 @@
-import { memo } from "react";
+import { memo, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   Eye,
   EyeOff,
@@ -18,6 +19,10 @@ import {
   type AgentConnection,
   type RemoteConnection,
 } from "../lib/agent-protocol";
+
+/** Fullscreen chrome appears when the cursor is within this many pixels
+ *  of the top or bottom screen edge. */
+const EDGE_BAR_PX = 56;
 
 /** Intent-level actions for the monitoring surface. Passed as one
  *  stable object (identity held by a ref in MultiAgentApp) so memoized
@@ -49,9 +54,27 @@ const SessionViewerCard = memo(function SessionViewerCard({
   actions: MonitoringActions;
 }) {
   const key = connectionKey(agent.id, session.sessionId);
+  // Fullscreen chrome auto-hide: bars appear only while the cursor is
+  // inside a band at the top/bottom edge of the screen.
+  const [edgeBar, setEdgeBar] = useState<"top" | "bottom" | null>(null);
+  const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!isFullscreen) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - rect.top;
+    const zone =
+      y <= EDGE_BAR_PX
+        ? "top"
+        : y >= rect.height - EDGE_BAR_PX
+          ? "bottom"
+          : null;
+    setEdgeBar((current) => (current === zone ? current : zone));
+  };
+  const topBarVisible = isFullscreen ? edgeBar === "top" : undefined;
   return (
     <Card
       key={key}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => setEdgeBar(null)}
       className={cn(
         "group relative flex min-h-0 flex-col overflow-hidden",
         isFullscreen && "fixed inset-0 z-50 m-0 rounded-none border-0",
@@ -60,7 +83,11 @@ const SessionViewerCard = memo(function SessionViewerCard({
       <CardHeader
         className={cn(
           "absolute inset-x-0 top-0 z-30 flex-row items-center justify-between space-y-0 border-b border-white/10 bg-black/60 px-3 py-2 text-primary-foreground backdrop-blur-sm transition-opacity duration-200",
-          "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+          isFullscreen
+            ? topBarVisible
+              ? "pointer-events-auto opacity-100"
+              : "pointer-events-none opacity-0"
+            : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
         )}
       >
         <div className="min-w-0">
@@ -129,7 +156,14 @@ const SessionViewerCard = memo(function SessionViewerCard({
         )}
       </CardContent>
       {isFullscreen && remote && (
-        <div className="absolute bottom-0 left-0 right-0 z-60 flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur">
+        <div
+          className={cn(
+            "absolute bottom-0 left-0 right-0 z-60 flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur transition-all duration-200 focus-within:pointer-events-auto focus-within:opacity-100",
+            edgeBar === "bottom"
+              ? "pointer-events-auto translate-y-0 opacity-100"
+              : "pointer-events-none translate-y-full opacity-0",
+          )}
+        >
           <div className="text-sm">
             <span className="font-medium">{session.username}</span>
             <span className="ml-2 text-muted-foreground">
