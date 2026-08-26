@@ -6,7 +6,7 @@ use std::{env, error::Error, sync::mpsc, time::Duration};
 
 use clap::Parser;
 use enigo::{Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use rustvncserver::{server::ServerEvent, VncServer};
+use rustvncserver::{VncServer, server::ServerEvent};
 use tracing::{error, info, warn};
 use xcap::Monitor;
 
@@ -338,8 +338,8 @@ fn set_windows_clipboard(_text: &str) -> Result<(), Box<dyn Error + Send + Sync>
 #[cfg(target_os = "windows")]
 fn apply_button_transitions(previous_mask: u8, current_mask: u8) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, mouse_event,
     };
 
     let transitions = [
