@@ -22,8 +22,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --workspace
-      - run: cargo test --workspace
+      - run: cargo check --workspace --exclude msm-agent
+      - run: cargo test --workspace --exclude msm-agent
 
   windows-agent:
     runs-on: windows-latest
@@ -35,6 +35,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: cargo build --release -p msm-agent
+      - run: cargo test -p msm-agent
       - run: bun run build
       - run: bun run installer:app
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-agent.ps1
