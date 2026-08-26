@@ -62,7 +62,7 @@ export default function MultiAgentApp() {
   // Global shortcuts only while a viewer is fullscreen:
   //   Ctrl+Shift+V  toggle view-only / control
   //   Ctrl+Shift+F  exit fullscreen
-  // Escape also exits while the window has focus.
+  // Escape is intentionally NOT bound: it must reach the remote session.
   useEffect(() => {
     if (!isAppFullscreen) return;
     const exitFullscreen = () => {
@@ -77,12 +77,7 @@ export default function MultiAgentApp() {
       if (event.state !== "Pressed") return;
       exitFullscreen();
     }).catch(() => undefined);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") exitFullscreen();
-    };
-    document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
       void unregisterAll().catch(() => undefined);
     };
   }, [isAppFullscreen]);

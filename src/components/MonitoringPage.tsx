@@ -1,5 +1,4 @@
-import { memo, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -55,26 +54,30 @@ const SessionViewerCard = memo(function SessionViewerCard({
 }) {
   const key = connectionKey(agent.id, session.sessionId);
   // Fullscreen chrome auto-hide: bars appear only while the cursor is
-  // inside a band at the top/bottom edge of the screen.
+  // inside a band at the top/bottom edge of the screen. Uses a native
+  // window listener because noVNC grabs pointer events on its canvas,
+  // which makes React synthetic events unreliable over the video.
   const [edgeBar, setEdgeBar] = useState<"top" | "bottom" | null>(null);
-  const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+  useEffect(() => {
     if (!isFullscreen) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const y = event.clientY - rect.top;
-    const zone =
-      y <= EDGE_BAR_PX
-        ? "top"
-        : y >= rect.height - EDGE_BAR_PX
-          ? "bottom"
-          : null;
-    setEdgeBar((current) => (current === zone ? current : zone));
-  };
-  const topBarVisible = isFullscreen ? edgeBar === "top" : undefined;
+    const onMove = (event: MouseEvent) => {
+      const zone =
+        event.clientY <= EDGE_BAR_PX
+          ? "top"
+          : event.clientY >= window.innerHeight - EDGE_BAR_PX
+            ? "bottom"
+            : null;
+      setEdgeBar((current) => (current === zone ? current : zone));
+    };
+    window.addEventListener("mousemove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+    };
+  }, [isFullscreen]);
+  const topBarVisible = edgeBar === "top";
   return (
     <Card
       key={key}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={() => setEdgeBar(null)}
       className={cn(
         "group relative flex min-h-0 flex-col overflow-hidden",
         isFullscreen && "fixed inset-0 z-50 m-0 rounded-none border-0",
@@ -89,8 +92,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
               : "pointer-events-none opacity-0"
             : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
         )}
-      >
-        <div className="min-w-0">
+      >        <div className="min-w-0">
           <CardTitle className="truncate text-sm text-white">
             {session.username}
           </CardTitle>
@@ -187,7 +189,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
               {fullscreenViewOnly ? "View only" : "Control"}
             </Label>
             <span className="text-[10px] text-muted-foreground">
-              Ctrl+Shift+V toggles mode · Ctrl+Shift+F or Esc exits
+              Ctrl+Shift+V toggles mode · Ctrl+Shift+F exits
             </span>
             <Button
               variant="outline"
