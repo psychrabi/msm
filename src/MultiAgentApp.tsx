@@ -1,10 +1,16 @@
-﻿import { useState } from "react";
+﻿import { useRef, useState } from "react";
 import { isValidAgentIp } from "./lib/agent-protocol";
 import { hasSavedAgents } from "./lib/agent-storage";
 import { useAgentConnections } from "./hooks/useAgentConnections";
 import { AppHeader, type Page } from "./components/AppHeader";
-import { AgentSidebar } from "./components/AgentSidebar";
-import { MonitoringPage } from "./components/MonitoringPage";
+import {
+  AgentSidebar,
+  type AgentSidebarActions,
+} from "./components/AgentSidebar";
+import {
+  MonitoringPage,
+  type MonitoringActions,
+} from "./components/MonitoringPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { AboutPage } from "./components/AboutPage";
 import { connectionKey } from "./lib/agent-protocol";
@@ -77,6 +83,39 @@ export default function MultiAgentApp() {
   );
   const savedAgentsPresent = hasSavedAgents();
 
+  // Stable-identity action objects: the refs are mutated with fresh closures
+  // every render, so memoized children see an unchanged prop while still
+  // calling the latest handlers (no stale-closure risk).
+  const monitoringActionsRef = useRef<MonitoringActions>({
+    openFullscreen: () => undefined,
+    closeFullscreen: () => undefined,
+    setViewOnly: () => undefined,
+    disconnectRemote: () => undefined,
+    startSession: () => undefined,
+    viewerError: () => undefined,
+  });
+  monitoringActionsRef.current = {
+    openFullscreen,
+    closeFullscreen,
+    setViewOnly: setFullscreenViewOnly,
+    disconnectRemote: handleDisconnectRemote,
+    startSession: (agentIdValue, sessionId) =>
+      void startRemoteSession(agentIdValue, sessionId, true),
+    viewerError: setGlobalError,
+  };
+  const sidebarActionsRef = useRef<AgentSidebarActions>({
+    connect: () => undefined,
+    disconnect: () => undefined,
+    remove: () => undefined,
+    goToAddAgent: () => undefined,
+  });
+  sidebarActionsRef.current = {
+    connect: (id) => void connectAgent(id),
+    disconnect: (id) => void handleDisconnectAgent(id),
+    remove: (id) => void removeAgent(id),
+    goToAddAgent: () => setActivePage("settings"),
+  };
+
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
       <AppHeader
@@ -91,10 +130,7 @@ export default function MultiAgentApp() {
             connectingSessions={connectingSessions}
             connectedByKey={connectedByKey}
             totalSessions={totalSessions}
-            onConnectAgent={(id) => void connectAgent(id)}
-            onDisconnectAgent={(id) => void handleDisconnectAgent(id)}
-            onRemoveAgent={(id) => void removeAgent(id)}
-            onAddAgent={() => setActivePage("settings")}
+            actions={sidebarActionsRef.current}
           />
           <MonitoringPage
             agents={agents}
@@ -104,14 +140,7 @@ export default function MultiAgentApp() {
             fullscreenKey={fullscreenKey}
             fullscreenViewOnly={fullscreenViewOnly}
             globalError={globalError}
-            onOpenFullscreen={openFullscreen}
-            onCloseFullscreen={closeFullscreen}
-            onViewOnlyChange={setFullscreenViewOnly}
-            onDisconnectRemote={handleDisconnectRemote}
-            onStartSession={(agentIdValue, sessionId) =>
-              void startRemoteSession(agentIdValue, sessionId, true)
-            }
-            onViewerError={setGlobalError}
+            actions={monitoringActionsRef.current}
           />
         </div>
       )}

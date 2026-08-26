@@ -1,27 +1,75 @@
+import { memo } from "react";
 import { Activity, Plus, Wifi, WifiOff, X } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import { connectionKey, type AgentConnection, type RemoteConnection } from "../lib/agent-protocol";
+import {
+  connectionKey,
+  type AgentConnection,
+  type RemoteConnection,
+} from "../lib/agent-protocol";
+
+/** Intent-level actions, held in a stable object by MultiAgentApp so
+ *  memoized rows skip re-renders caused by unrelated state changes. */
+export type AgentSidebarActions = {
+  connect: (id: string) => void;
+  disconnect: (id: string) => void;
+  remove: (id: string) => void;
+  goToAddAgent: () => void;
+};
+
+const AgentSessionRow = memo(function AgentSessionRow({
+  username,
+  sessionId,
+  active,
+  connected,
+  connecting,
+}: {
+  username: string;
+  sessionId: string;
+  active: boolean;
+  connected: boolean;
+  connecting: boolean;
+}) {
+  return (
+    <div className="mt-2 flex items-center justify-between rounded-md border px-2 py-1.5">
+      <div className="min-w-0">
+        <p className="truncate text-xs font-medium">{username}</p>
+        <p className="text-[10px] text-muted-foreground">
+          Session {sessionId}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            active ? "bg-emerald-500" : "bg-muted-foreground",
+          )}
+        />
+        {connecting ? (
+          <Activity className="h-3 w-3" />
+        ) : connected ? (
+          <Wifi className="h-3 w-3 text-emerald-500" />
+        ) : (
+          <WifiOff className="h-3 w-3 text-muted-foreground" />
+        )}
+      </div>
+    </div>
+  );
+});
 
 export function AgentSidebar({
   agents,
   connectingSessions,
   connectedByKey,
   totalSessions,
-  onConnectAgent,
-  onDisconnectAgent,
-  onRemoveAgent,
-  onAddAgent,
+  actions,
 }: {
   agents: AgentConnection[];
   connectingSessions: Set<string>;
   connectedByKey: Map<string, RemoteConnection>;
   totalSessions: number;
-  onConnectAgent: (id: string) => void;
-  onDisconnectAgent: (id: string) => void;
-  onRemoveAgent: (id: string) => void;
-  onAddAgent: () => void;
+  actions: AgentSidebarActions;
 }) {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r bg-muted/20">
@@ -88,7 +136,7 @@ export function AgentSidebar({
                   agent.status === "Reconnecting…" ||
                   !agent.token
                 }
-                onClick={() => onConnectAgent(agent.id)}
+                onClick={() => actions.connect(agent.id)}
               >
                 {agent.status === "Reconnecting…"
                   ? "Reconnecting…"
@@ -98,14 +146,14 @@ export function AgentSidebar({
                 size="sm"
                 variant="ghost"
                 disabled={agent.status === "Disconnected"}
-                onClick={() => onDisconnectAgent(agent.id)}
+                onClick={() => actions.disconnect(agent.id)}
               >
                 Disconnect
               </Button>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => onRemoveAgent(agent.id)}
+                onClick={() => actions.remove(agent.id)}
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -115,39 +163,15 @@ export function AgentSidebar({
             )}
             {agent.sessions.map((session) => {
               const key = connectionKey(agent.id, session.sessionId);
-              const connected = connectedByKey.has(key);
-              const connecting = connectingSessions.has(key);
               return (
-                <div
+                <AgentSessionRow
                   key={key}
-                  className="mt-2 flex items-center justify-between rounded-md border px-2 py-1.5"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-medium">
-                      {session.username}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground">
-                      Session {session.sessionId}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 rounded-full",
-                        session.state === "active"
-                          ? "bg-emerald-500"
-                          : "bg-muted-foreground",
-                      )}
-                    />
-                    {connecting ? (
-                      <Activity className="h-3 w-3" />
-                    ) : connected ? (
-                      <Wifi className="h-3 w-3 text-emerald-500" />
-                    ) : (
-                      <WifiOff className="h-3 w-3 text-muted-foreground" />
-                    )}
-                  </div>
-                </div>
+                  username={session.username}
+                  sessionId={session.sessionId}
+                  active={session.state === "active"}
+                  connected={connectedByKey.has(key)}
+                  connecting={connectingSessions.has(key)}
+                />
               );
             })}
           </div>
@@ -159,7 +183,7 @@ export function AgentSidebar({
         )}
       </div>
       <div className="border-t p-3">
-        <Button className="w-full" variant="outline" onClick={onAddAgent}>
+        <Button className="w-full" variant="outline" onClick={actions.goToAddAgent}>
           <Plus className="h-4 w-4" /> Add agent
         </Button>
       </div>

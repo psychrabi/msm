@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   Eye,
   EyeOff,
@@ -19,19 +20,26 @@ import {
   type RemoteConnection,
 } from "../lib/agent-protocol";
 
-function SessionViewerCard({
+/** Intent-level actions for the monitoring surface. Passed as one
+ *  stable object (identity held by a ref in MultiAgentApp) so memoized
+ *  viewer cards only re-render when their own data changes. */
+export type MonitoringActions = {
+  openFullscreen: (key: string) => void;
+  closeFullscreen: () => void;
+  setViewOnly: (viewOnly: boolean) => void;
+  disconnectRemote: (agentId: string, sessionId: string) => void;
+  startSession: (agentId: string, sessionId: string) => void;
+  viewerError: (message: string) => void;
+};
+
+const SessionViewerCard = memo(function SessionViewerCard({
   agent,
   session,
   remote,
   connecting,
   isFullscreen,
   fullscreenViewOnly,
-  onOpenFullscreen,
-  onCloseFullscreen,
-  onViewOnlyChange,
-  onDisconnectRemote,
-  onStartSession,
-  onViewerError,
+  actions,
 }: {
   agent: AgentConnection;
   session: AgentConnection["sessions"][number];
@@ -39,12 +47,7 @@ function SessionViewerCard({
   connecting: boolean;
   isFullscreen: boolean;
   fullscreenViewOnly: boolean;
-  onOpenFullscreen: (key: string) => void;
-  onCloseFullscreen: () => void;
-  onViewOnlyChange: (viewOnly: boolean) => void;
-  onDisconnectRemote: (agentId: string, sessionId: string) => void;
-  onStartSession: (agentId: string, sessionId: string) => void;
-  onViewerError: (message: string) => void;
+  actions: MonitoringActions;
 }) {
   const key = connectionKey(agent.id, session.sessionId);
   return (
@@ -69,7 +72,7 @@ function SessionViewerCard({
               variant="ghost"
               size="icon"
               aria-label={`Fullscreen ${session.username}`}
-              onClick={() => onOpenFullscreen(key)}
+              onClick={() => actions.openFullscreen(key)}
             >
               {isFullscreen ? (
                 <Minimize2 className="h-4 w-4" />
@@ -83,7 +86,7 @@ function SessionViewerCard({
               variant="ghost"
               size="icon"
               aria-label={`Disconnect ${session.username}`}
-              onClick={() => onDisconnectRemote(agent.id, session.sessionId)}
+              onClick={() => actions.disconnectRemote(agent.id, session.sessionId)}
             >
               <X className="h-4 w-4" />
             </Button>
@@ -102,15 +105,15 @@ function SessionViewerCard({
             endpoint={agent.endpoint}
             token={agent.token}
             viewOnly={isFullscreen ? fullscreenViewOnly : true}
-            onDisconnect={() => onDisconnectRemote(agent.id, session.sessionId)}
-            onError={onViewerError}
+            onDisconnect={() => actions.disconnectRemote(agent.id, session.sessionId)}
+            onError={actions.viewerError}
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-black">
             <Button
               size="sm"
               disabled={agent.status !== "Connected" || connecting}
-              onClick={() => onStartSession(agent.id, session.sessionId)}
+              onClick={() => actions.startSession(agent.id, session.sessionId)}
             >
               {connecting ? "Connecting…" : "Connect"}
             </Button>
@@ -131,7 +134,7 @@ function SessionViewerCard({
               <Checkbox
                 checked={fullscreenViewOnly}
                 onCheckedChange={(checked: boolean | "indeterminate") =>
-                  onViewOnlyChange(checked === true)
+                  actions.setViewOnly(checked === true)
                 }
               />
               {fullscreenViewOnly ? (
@@ -141,13 +144,13 @@ function SessionViewerCard({
               )}{" "}
               View only
             </Label>
-            <Button variant="outline" size="sm" onClick={onCloseFullscreen}>
+            <Button variant="outline" size="sm" onClick={actions.closeFullscreen}>
               <Minimize2 className="h-4 w-4" /> Exit fullscreen
             </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onDisconnectRemote(agent.id, session.sessionId)}
+              onClick={() => actions.disconnectRemote(agent.id, session.sessionId)}
             >
               <X className="h-4 w-4" /> Disconnect
             </Button>
@@ -156,7 +159,7 @@ function SessionViewerCard({
       )}
     </Card>
   );
-}
+});
 
 export function MonitoringPage({
   agents,
@@ -166,12 +169,7 @@ export function MonitoringPage({
   fullscreenKey,
   fullscreenViewOnly,
   globalError,
-  onOpenFullscreen,
-  onCloseFullscreen,
-  onViewOnlyChange,
-  onDisconnectRemote,
-  onStartSession,
-  onViewerError,
+  actions,
 }: {
   agents: AgentConnection[];
   connectingSessions: Set<string>;
@@ -180,12 +178,7 @@ export function MonitoringPage({
   fullscreenKey: string | null;
   fullscreenViewOnly: boolean;
   globalError: string;
-  onOpenFullscreen: (key: string) => void;
-  onCloseFullscreen: () => void;
-  onViewOnlyChange: (viewOnly: boolean) => void;
-  onDisconnectRemote: (agentId: string, sessionId: string) => void;
-  onStartSession: (agentId: string, sessionId: string) => void;
-  onViewerError: (message: string) => void;
+  actions: MonitoringActions;
 }) {
   return (
     <main className="min-w-0 flex-1 overflow-auto">
@@ -241,12 +234,7 @@ export function MonitoringPage({
                       connecting={connectingSessions.has(key)}
                       isFullscreen={fullscreenKey === key}
                       fullscreenViewOnly={fullscreenViewOnly}
-                      onOpenFullscreen={onOpenFullscreen}
-                      onCloseFullscreen={onCloseFullscreen}
-                      onViewOnlyChange={onViewOnlyChange}
-                      onDisconnectRemote={onDisconnectRemote}
-                      onStartSession={onStartSession}
-                      onViewerError={onViewerError}
+                      actions={actions}
                     />
                   );
                 })}
