@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -21,7 +21,10 @@ import {
 
 /** Fullscreen chrome appears when the cursor is within this many pixels
  *  of the top or bottom screen edge. */
-const EDGE_BAR_PX = 1;
+const EDGE_BAR_PX = 80;
+
+/** How long a revealed bar lingers after the cursor leaves its band. */
+const EDGE_BAR_LINGER_MS = 1500;
 
 /** Intent-level actions for the monitoring surface. Passed as one
  *  stable object (identity held by a ref in MultiAgentApp) so memoized
@@ -58,8 +61,22 @@ const SessionViewerCard = memo(function SessionViewerCard({
   // window listener because noVNC grabs pointer events on its canvas,
   // which makes React synthetic events unreliable over the video.
   const [edgeBar, setEdgeBar] = useState<"top" | "bottom" | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearHideTimer = () => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
   useEffect(() => {
     if (!isFullscreen) return;
+    const revealZone = (zone: "top" | "bottom") => {
+      clearHideTimer();
+      setEdgeBar((current) => (current === zone ? current : zone));
+    };
+    // Capture phase: noVNC's canvas handlers may stopPropagation() on
+    // bubbling mouse events, which would starve a normal window listener.
+    const options = { capture: true, passive: true } as const;
     const onMove = (event: MouseEvent) => {
       const zone =
         event.clientY <= EDGE_BAR_PX
@@ -67,17 +84,25 @@ const SessionViewerCard = memo(function SessionViewerCard({
           : event.clientY >= window.innerHeight - EDGE_BAR_PX
             ? "bottom"
             : null;
-      setEdgeBar((current) => (current === zone ? current : zone));
+      if (zone) revealZone(zone);
+      else if (!hideTimerRef.current)
+        hideTimerRef.current = setTimeout(() => {
+          hideTimerRef.current = null;
+          setEdgeBar(null);
+        }, EDGE_BAR_LINGER_MS);
     };
-    // Capture phase: noVNC's canvas handlers may stopPropagation() on
-    // bubbling mouse events, which would starve a normal window listener.
-    const options = { capture: true, passive: true } as const;
-    const onLeaveWindow = (event: MouseEvent) => {
-      if (!event.relatedTarget) setEdgeBar(null);
+    const onLeaveWindow = () => {
+      if (!hideTimerRef.current)
+        hideTimerRef.current = setTimeout(() => {
+          hideTimerRef.current = null;
+          setEdgeBar(null);
+        }, EDGE_BAR_LINGER_MS);
     };
     window.addEventListener("mousemove", onMove, options);
     window.addEventListener("mouseout", onLeaveWindow, options);
     return () => {
+      clearHideTimer();
+      setEdgeBar(null);
       window.removeEventListener("mousemove", onMove, options);
       window.removeEventListener("mouseout", onLeaveWindow, options);
     };
