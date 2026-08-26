@@ -1,6 +1,7 @@
-import { Activity, CircleHelp, Monitor, Settings2, Wifi, WifiOff } from "lucide-react";
+import { Activity, CircleHelp, Monitor, Moon, Settings2, Sun, Wifi, WifiOff } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { useTheme } from "./theme-provider";
 
 export type Page = "monitoring" | "settings" | "about";
 
@@ -13,6 +14,7 @@ export function AppHeader({
   onNavigate: (page: Page) => void;
   connectedAgentCount: number;
 }) {
+  const { resolvedTheme, setTheme } = useTheme();
   return (
     <header className="relative flex h-14 shrink-0 items-center justify-between border-b bg-background px-4">
       <div className="flex items-center gap-3">
@@ -49,18 +51,34 @@ export function AppHeader({
           <CircleHelp className="h-4 w-4" /> About
         </Button>
       </nav>
-      <Badge
-        variant={connectedAgentCount ? "default" : "outline"}
-        className="gap-1.5"
-      >
-        {connectedAgentCount ? (
-          <Wifi className="h-3 w-3" />
-        ) : (
-          <WifiOff className="h-3 w-3" />
-        )}
-        {connectedAgentCount} agent{connectedAgentCount === 1 ? "" : "s"}{" "}
-        connected
-      </Badge>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={
+            resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+          }
+          onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+        >
+          {resolvedTheme === "dark" ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </Button>
+        <Badge
+          variant={connectedAgentCount ? "default" : "outline"}
+          className="gap-1.5"
+        >
+          {connectedAgentCount ? (
+            <Wifi className="h-3 w-3" />
+          ) : (
+            <WifiOff className="h-3 w-3" />
+          )}
+          {connectedAgentCount} agent{connectedAgentCount === 1 ? "" : "s"}{" "}
+          connected
+        </Badge>
+      </div>
     </header>
   );
 }
