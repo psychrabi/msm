@@ -9,8 +9,8 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Checkbox } from "./ui/checkbox";
 import { Label } from "./ui/label";
+import { Switch } from "./ui/switch";
 import { RemoteViewer } from "./RemoteViewer";
 import { cn } from "../lib/utils";
 import {
@@ -61,7 +61,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
   // inside a band at the top/bottom edge of the screen. Uses a native
   // window listener because noVNC grabs pointer events on its canvas,
   // which makes React synthetic events unreliable over the video.
-  const [edgeBar, setEdgeBar] = useState<"top" | "bottom" | null>(null);
+  const [edgeBarVisible, setEdgeBarVisible] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True while the cursor is over a revealed bar; pauses the hide timer so
   // bars stay usable even though they sit outside the tiny trigger band.
@@ -76,27 +76,19 @@ const SessionViewerCard = memo(function SessionViewerCard({
     if (overChromeRef.current || hideTimerRef.current) return;
     hideTimerRef.current = setTimeout(() => {
       hideTimerRef.current = null;
-      setEdgeBar(null);
+      setEdgeBarVisible(false);
     }, EDGE_BAR_LINGER_MS);
   };
   useEffect(() => {
     if (!isFullscreen) return;
-    const revealZone = (zone: "top" | "bottom") => {
-      clearHideTimer();
-      setEdgeBar((current) => (current === zone ? current : zone));
-    };
     // Capture phase: noVNC's canvas handlers may stopPropagation() on
     // bubbling mouse events, which would starve a normal window listener.
     const options = { capture: true, passive: true } as const;
     const onMove = (event: MouseEvent) => {
-      const zone =
-        event.clientY <= EDGE_BAR_PX
-          ? "top"
-          : event.clientY >= window.innerHeight - EDGE_BAR_PX
-            ? "bottom"
-            : null;
-      if (zone) revealZone(zone);
-      else scheduleHide();
+      if (event.clientY <= EDGE_BAR_PX) {
+        clearHideTimer();
+        setEdgeBarVisible(true);
+      } else scheduleHide();
     };
     const onLeaveWindow = () => scheduleHide();
     window.addEventListener("mousemove", onMove, options);
@@ -104,7 +96,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
     return () => {
       clearHideTimer();
       overChromeRef.current = false;
-      setEdgeBar(null);
+      setEdgeBarVisible(false);
       window.removeEventListener("mousemove", onMove, options);
       window.removeEventListener("mouseout", onLeaveWindow, options);
     };
@@ -119,7 +111,6 @@ const SessionViewerCard = memo(function SessionViewerCard({
       scheduleHide();
     },
   };
-  const topBarVisible = edgeBar === "top";
   return (
     <Card
       key={key}
@@ -133,7 +124,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
         className={cn(
           "absolute inset-x-0 top-0 z-30 flex-row items-center justify-between space-y-0 border-b border-white/10 bg-black/60 px-3 py-2 text-primary-foreground backdrop-blur-sm transition-opacity duration-200",
           isFullscreen
-            ? topBarVisible
+            ? edgeBarVisible
               ? "pointer-events-auto opacity-100"
               : "pointer-events-none opacity-0"
             : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
@@ -147,8 +138,27 @@ const SessionViewerCard = memo(function SessionViewerCard({
             {session.sessionId}
           </p>
         </div>
-        <div className="flex items-center gap-1">
-          {remote && (
+        <div className="flex items-center gap-2">
+          {isFullscreen && remote && (
+            <>
+              <Label className="flex items-center gap-2 text-xs text-white">
+                <Switch
+                  checked={fullscreenViewOnly}
+                  onCheckedChange={actions.setViewOnly}
+                />
+                {fullscreenViewOnly ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
+                View only
+              </Label>
+              <span className="hidden text-[10px] text-white/50 md:inline">
+                Ctrl+Shift+V mode · Ctrl+Shift+F exits
+              </span>
+            </>
+          )}
+          {remote && !isFullscreen && (
             <Button
               variant="ghost"
               size="icon"
@@ -156,11 +166,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
               aria-label={`Fullscreen ${session.username}`}
               onClick={() => actions.openFullscreen(key)}
             >
-              {isFullscreen ? (
-                <Minimize2 className="h-4 w-4" />
-              ) : (
-                <Maximize2 className="h-4 w-4" />
-              )}
+              <Maximize2 className="h-4 w-4" />
             </Button>
           )}
           {remote && (
@@ -172,6 +178,16 @@ const SessionViewerCard = memo(function SessionViewerCard({
               onClick={() => actions.disconnectRemote(agent.id, session.sessionId)}
             >
               <X className="h-4 w-4" />
+            </Button>
+          )}
+          {isFullscreen && remote && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-white/20 bg-transparent text-white hover:bg-white/15 hover:text-white"
+              onClick={actions.closeFullscreen}
+            >
+              <Minimize2 className="h-4 w-4" /> Exit
             </Button>
           )}
         </div>
@@ -203,58 +219,6 @@ const SessionViewerCard = memo(function SessionViewerCard({
           </div>
         )}
       </CardContent>
-      {isFullscreen && remote && (
-        <div
-          {...chromeHoverHandlers}
-          className={cn(
-            "absolute bottom-0 left-0 right-0 z-60 flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur transition-all duration-200 focus-within:pointer-events-auto focus-within:opacity-100",
-            edgeBar === "bottom"
-              ? "pointer-events-auto translate-y-0 opacity-100"
-              : "pointer-events-none translate-y-full opacity-0",
-          )}
-        >
-          <div className="text-sm">
-            <span className="font-medium">{session.username}</span>
-            <span className="ml-2 text-muted-foreground">
-              {agent.identity?.deviceName ?? agent.endpoint} · Session{" "}
-              {session.sessionId}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <Label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={fullscreenViewOnly}
-                onCheckedChange={(checked: boolean | "indeterminate") =>
-                  actions.setViewOnly(checked === true)
-                }
-              />
-              {fullscreenViewOnly ? (
-                <Eye className="h-4 w-4" />
-              ) : (
-                <EyeOff className="h-4 w-4" />
-              )}{" "}
-              {fullscreenViewOnly ? "View only" : "Control"}
-            </Label>
-            <span className="text-[10px] text-muted-foreground">
-              Ctrl+Shift+V toggles mode · Ctrl+Shift+F exits
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={actions.closeFullscreen}
-            >
-              <Minimize2 className="h-4 w-4" /> Exit fullscreen
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => actions.disconnectRemote(agent.id, session.sessionId)}
-            >
-              <X className="h-4 w-4" /> Disconnect
-            </Button>
-          </div>
-        </div>
-      )}
     </Card>
   );
 });
