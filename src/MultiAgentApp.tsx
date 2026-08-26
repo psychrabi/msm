@@ -167,14 +167,28 @@ export default function MultiAgentApp() {
     connectingAgentsRef.current.add(id); manualDisconnectRef.current.delete(id); updateAgent(id, { status: isReconnect ? 'Reconnecting…' : 'Connecting…', error: '' });
     try {
       const connection = await WebSocket.connect(agent.endpoint, { headers: { Authorization: `Bearer ${agent.token.trim()}` } });
-      socketsRef.current.set(id, connection); clearReconnectTimer(id);
-      addSavedAgent(agent.endpoint); await setCredential(agent.endpoint, agent.token.trim());
+      socketsRef.current.set(id, connection);
+      clearReconnectTimer(id);
+      updateAgent(id, { status: 'Connected', error: '' });
+      addSavedAgent(agent.endpoint);
+      await setCredential(agent.endpoint, agent.token.trim());
       connection.addListener((message) => {
         if (message.type !== 'Text') return;
         try {
           const payload = JSON.parse(message.data) as AgentMessage;
-          if (payload.type === 'hello') { updateAgent(id, { identity: payload.identity, status: 'Connected', error: '' }); void refreshSessions(id); return; }
-          if (payload.type === 'sessions') { updateAgent(id, { sessions: payload.sessions }); return; }
+          if (payload.type === 'hello') {
+            updateAgent(id, { identity: payload.identity, status: 'Connected', error: '' });
+            void refreshSessions(id);
+            return;
+          }
+          if (payload.type === 'sessions') {
+            updateAgent(id, { sessions: payload.sessions });
+            for (const session of payload.sessions) {
+              if (session.state !== 'active') continue;
+              void startRemoteSession(id, session.sessionId);
+            }
+            return;
+          }
           if (payload.type === 'remoteSession') {
             const key = connectionKey(id, payload.session.sessionId);
             if (!pendingRemoteRequestsRef.current.has(key)) return;
@@ -186,6 +200,9 @@ export default function MultiAgentApp() {
           if (payload.type === 'error') setGlobalError(`${agentsRef.current.find((item) => item.id === id)?.identity?.deviceName ?? id}: ${payload.message}`);
         } catch { updateAgent(id, { error: 'Received an invalid message from the agent.' }); }
       });
+      // Do not depend on the initial `hello` frame arriving before the listener is attached.
+      // The socket is already established, so request the session list immediately.
+      void refreshSessions(id);
     } catch (error) {
       if (isUnauthorizedError(error)) { await deleteCredential(agent.endpoint).catch(() => undefined); removeSavedAgent(agent.endpoint); updateAgent(id, { status: 'Disconnected', token: '', remembered: false, error: 'Authentication failed (401).' }); }
       else { updateAgent(id, { status: 'Disconnected', error: error instanceof Error ? error.message : String(error) }); scheduleReconnect(id); }
