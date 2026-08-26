@@ -53,14 +53,21 @@ const SessionViewerCard = memo(function SessionViewerCard({
     <Card
       key={key}
       className={cn(
-        "flex min-h-0 flex-col overflow-hidden",
+        "group relative flex min-h-0 flex-col overflow-hidden",
         isFullscreen && "fixed inset-0 z-50 m-0 rounded-none border-0",
       )}
     >
-      <CardHeader className="flex-row items-center justify-between space-y-0 border-b px-3 py-2">
+      <CardHeader
+        className={cn(
+          "absolute inset-x-0 top-0 z-30 flex-row items-center justify-between space-y-0 border-b border-white/10 bg-black/60 px-3 py-2 text-primary-foreground backdrop-blur-sm transition-opacity duration-200",
+          "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+        )}
+      >
         <div className="min-w-0">
-          <CardTitle className="truncate text-sm">{session.username}</CardTitle>
-          <p className="truncate text-[11px] text-muted-foreground">
+          <CardTitle className="truncate text-sm text-white">
+            {session.username}
+          </CardTitle>
+          <p className="truncate text-[11px] text-white/60">
             {agent.identity?.deviceName ?? agent.endpoint} · Session{" "}
             {session.sessionId}
           </p>
@@ -70,6 +77,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
             <Button
               variant="ghost"
               size="icon"
+              className="hover:bg-white/15 hover:text-white"
               aria-label={`Fullscreen ${session.username}`}
               onClick={() => actions.openFullscreen(key)}
             >
@@ -84,6 +92,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
             <Button
               variant="ghost"
               size="icon"
+              className="hover:bg-white/15 hover:text-white"
               aria-label={`Disconnect ${session.username}`}
               onClick={() => actions.disconnectRemote(agent.id, session.sessionId)}
             >
@@ -120,7 +129,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
         )}
       </CardContent>
       {isFullscreen && remote && (
-        <div className="absolute bottom-0 left-0 right-0 z-[60] flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur">
+        <div className="absolute bottom-0 left-0 right-0 z-60 flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur">
           <div className="text-sm">
             <span className="font-medium">{session.username}</span>
             <span className="ml-2 text-muted-foreground">
@@ -207,7 +216,7 @@ export function MonitoringPage({
         )}
         <section className="flex-1 p-5">
           {totalSessions === 0 ? (
-            <div className="flex min-h-[360px] items-center justify-center rounded-xl border bg-muted/10 text-center">
+            <div className="flex min-h-90 items-center justify-center rounded-xl border bg-muted/10 text-center">
               <div>
                 <Monitor className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" />
                 <p className="text-sm font-medium">

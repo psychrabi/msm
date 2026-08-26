@@ -80,7 +80,7 @@ export function SettingsPage({
             <CardContent className="space-y-2">
               {agents.length ? (
                 agents.map((agent) => (
-                  <div key={agent.id} className="rounded-lg border p-3">
+                  <div key={agent.id} className="rounded-sm border p-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium">
