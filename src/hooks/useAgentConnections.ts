@@ -26,7 +26,7 @@ import {
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 60000;
 const RECONNECT_JITTER = 0.15;
-const HEALTH_CHECK_INTERVAL_MS = 5000;
+const HEALTH_CHECK_INTERVAL_MS = 30000;
 
 /** Per-viewer lifecycle flags for one session on one agent. */
 type ViewerRuntime = {

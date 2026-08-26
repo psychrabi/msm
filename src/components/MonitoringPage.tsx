@@ -19,9 +19,10 @@ import {
   type RemoteConnection,
 } from "../lib/agent-protocol";
 
-/** Fullscreen chrome appears when the cursor is within this many pixels
- *  of the top or bottom screen edge. */
-const EDGE_BAR_PX = 80;
+/** Fullscreen chrome appears when the cursor touches this many pixels
+ *  from the top or bottom screen edge. Deliberately tiny so remote
+ *  interactions near screen edges are not intercepted. */
+const EDGE_BAR_PX = 2;
 
 /** How long a revealed bar lingers after the cursor leaves its band. */
 const EDGE_BAR_LINGER_MS = 1500;
@@ -62,11 +63,21 @@ const SessionViewerCard = memo(function SessionViewerCard({
   // which makes React synthetic events unreliable over the video.
   const [edgeBar, setEdgeBar] = useState<"top" | "bottom" | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while the cursor is over a revealed bar; pauses the hide timer so
+  // bars stay usable even though they sit outside the tiny trigger band.
+  const overChromeRef = useRef(false);
   const clearHideTimer = () => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
     }
+  };
+  const scheduleHide = () => {
+    if (overChromeRef.current || hideTimerRef.current) return;
+    hideTimerRef.current = setTimeout(() => {
+      hideTimerRef.current = null;
+      setEdgeBar(null);
+    }, EDGE_BAR_LINGER_MS);
   };
   useEffect(() => {
     if (!isFullscreen) return;
@@ -85,28 +96,29 @@ const SessionViewerCard = memo(function SessionViewerCard({
             ? "bottom"
             : null;
       if (zone) revealZone(zone);
-      else if (!hideTimerRef.current)
-        hideTimerRef.current = setTimeout(() => {
-          hideTimerRef.current = null;
-          setEdgeBar(null);
-        }, EDGE_BAR_LINGER_MS);
+      else scheduleHide();
     };
-    const onLeaveWindow = () => {
-      if (!hideTimerRef.current)
-        hideTimerRef.current = setTimeout(() => {
-          hideTimerRef.current = null;
-          setEdgeBar(null);
-        }, EDGE_BAR_LINGER_MS);
-    };
+    const onLeaveWindow = () => scheduleHide();
     window.addEventListener("mousemove", onMove, options);
     window.addEventListener("mouseout", onLeaveWindow, options);
     return () => {
       clearHideTimer();
+      overChromeRef.current = false;
       setEdgeBar(null);
       window.removeEventListener("mousemove", onMove, options);
       window.removeEventListener("mouseout", onLeaveWindow, options);
     };
   }, [isFullscreen]);
+  const chromeHoverHandlers = {
+    onMouseEnter: () => {
+      overChromeRef.current = true;
+      clearHideTimer();
+    },
+    onMouseLeave: () => {
+      overChromeRef.current = false;
+      scheduleHide();
+    },
+  };
   const topBarVisible = edgeBar === "top";
   return (
     <Card
@@ -117,6 +129,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
       )}
     >
       <CardHeader
+        {...chromeHoverHandlers}
         className={cn(
           "absolute inset-x-0 top-0 z-30 flex-row items-center justify-between space-y-0 border-b border-white/10 bg-black/60 px-3 py-2 text-primary-foreground backdrop-blur-sm transition-opacity duration-200",
           isFullscreen
@@ -192,6 +205,7 @@ const SessionViewerCard = memo(function SessionViewerCard({
       </CardContent>
       {isFullscreen && remote && (
         <div
+          {...chromeHoverHandlers}
           className={cn(
             "absolute bottom-0 left-0 right-0 z-60 flex items-center justify-between border-t bg-background/95 px-4 py-3 backdrop-blur transition-all duration-200 focus-within:pointer-events-auto focus-within:opacity-100",
             edgeBar === "bottom"
