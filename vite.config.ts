@@ -10,6 +10,18 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Framework code changes rarely; keeping it separate preserves
+        // the browser cache across app-code iterations.
+        manualChunks(id) {
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id))
+            return 'vendor';
+        },
+      },
+    },
+  },
   clearScreen: false,
   server: {
     port: 1420,
