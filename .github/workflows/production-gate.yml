@@ -22,8 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
       - run: cargo check --workspace
       - run: cargo test --workspace
 
@@ -32,8 +30,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
