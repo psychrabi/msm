@@ -11,6 +11,9 @@ export default defineConfig({
     },
   },
   build: {
+    // Tauri ships an evergreen WebView2 (Chromium); targeting the latest
+    // syntax produces the smallest possible output with zero legacy transforms.
+    target: 'esnext',
     rollupOptions: {
       output: {
         // Framework code changes rarely; keeping it separate preserves
@@ -21,6 +24,9 @@ export default defineConfig({
         },
       },
     },
+  },
+  optimizeDeps: {
+    include: ['react', 'react-dom'],
   },
   clearScreen: false,
   server: {

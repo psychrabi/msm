@@ -2,8 +2,24 @@ import { Activity, CircleHelp, Monitor, Moon, Settings2, Sun, Wifi, WifiOff } fr
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useTheme } from "./theme-provider";
+import {
+  loadAboutPage,
+  loadMonitoringPage,
+  loadSettingsPage,
+} from "../lib/page-loaders";
 
 export type Page = "monitoring" | "settings" | "about";
+
+/** Prefetch a split page chunk on hover/focus so navigation feels instant. */
+function prefetch(loader: () => Promise<unknown>) {
+  void loader().catch(() => undefined);
+}
+
+const PAGE_PRELOADS: Record<Page, () => void> = {
+  monitoring: () => prefetch(loadMonitoringPage),
+  settings: () => prefetch(loadSettingsPage),
+  about: () => prefetch(loadAboutPage),
+};
 
 export function AppHeader({
   activePage,
@@ -29,27 +45,24 @@ export function AppHeader({
         </div>
       </div>
       <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
-        <Button
-          variant={activePage === "monitoring" ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => onNavigate("monitoring")}
-        >
-          <Activity className="h-4 w-4" /> Monitoring
-        </Button>
-        <Button
-          variant={activePage === "settings" ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => onNavigate("settings")}
-        >
-          <Settings2 className="h-4 w-4" /> Settings
-        </Button>
-        <Button
-          variant={activePage === "about" ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => onNavigate("about")}
-        >
-          <CircleHelp className="h-4 w-4" /> About
-        </Button>
+        {(
+          [
+            { page: "monitoring", icon: Activity, label: "Monitoring" },
+            { page: "settings", icon: Settings2, label: "Settings" },
+            { page: "about", icon: CircleHelp, label: "About" },
+          ] as const
+        ).map(({ page, icon: Icon, label }) => (
+          <Button
+            key={page}
+            variant={activePage === page ? "secondary" : "ghost"}
+            size="sm"
+            onMouseEnter={() => PAGE_PRELOADS[page]()}
+            onFocus={() => PAGE_PRELOADS[page]()}
+            onClick={() => onNavigate(page)}
+          >
+            <Icon className="h-4 w-4" /> {label}
+          </Button>
+        ))}
       </nav>
       <div className="flex items-center gap-2">
         <Button

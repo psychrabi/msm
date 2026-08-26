@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   register,
@@ -7,19 +7,37 @@ import {
 import { isValidAgentIp } from "./lib/agent-protocol";
 import { hasSavedAgents } from "./lib/agent-storage";
 import { useAgentConnections } from "./hooks/useAgentConnections";
+import {
+  loadAboutPage,
+  loadMonitoringPage,
+  loadSettingsPage,
+} from "./lib/page-loaders";
 import { AppHeader, type Page } from "./components/AppHeader";
-import {
-  AgentSidebar,
-  type AgentSidebarActions,
-} from "./components/AgentSidebar";
-import {
-  MonitoringPage,
-  type MonitoringActions,
-} from "./components/MonitoringPage";
-import { SettingsPage } from "./components/SettingsPage";
-import { AboutPage } from "./components/AboutPage";
+import type { AgentSidebarActions } from "./components/AgentSidebar";
+import type { MonitoringActions } from "./components/MonitoringPage";
 import { connectionKey } from "./lib/agent-protocol";
 import "./styles.css";
+
+const AgentSidebar = lazy(async () => ({
+  default: (await import("./components/AgentSidebar")).AgentSidebar,
+}));
+const MonitoringPage = lazy(async () => ({
+  default: (await loadMonitoringPage()).MonitoringPage,
+}));
+const SettingsPage = lazy(async () => ({
+  default: (await loadSettingsPage()).SettingsPage,
+}));
+const AboutPage = lazy(async () => ({
+  default: (await loadAboutPage()).AboutPage,
+}));
+
+function PageFallback() {
+  return (
+    <div className="flex flex-1 items-center justify-center">
+      <p className="text-sm text-muted-foreground">Loading…</p>
+    </div>
+  );
+}
 
 export default function MultiAgentApp() {
   const {
@@ -161,41 +179,49 @@ export default function MultiAgentApp() {
         connectedAgentCount={connectedAgentCount}
       />
       {activePage === "monitoring" && (
-        <div className="flex min-h-0 flex-1">
-          <AgentSidebar
-            agents={agents}
-            connectingSessions={connectingSessions}
-            connectedByKey={connectedByKey}
-            totalSessions={totalSessions}
-            actions={sidebarActionsRef.current}
-          />
-          <MonitoringPage
-            agents={agents}
-            connectingSessions={connectingSessions}
-            connectedByKey={connectedByKey}
-            totalSessions={totalSessions}
-            fullscreenKey={fullscreenKey}
-            fullscreenViewOnly={fullscreenViewOnly}
-            globalError={globalError}
-            actions={monitoringActionsRef.current}
-          />
-        </div>
+        <Suspense fallback={<PageFallback />}>
+          <div className="flex min-h-0 flex-1">
+            <AgentSidebar
+              agents={agents}
+              connectingSessions={connectingSessions}
+              connectedByKey={connectedByKey}
+              totalSessions={totalSessions}
+              actions={sidebarActionsRef.current}
+            />
+            <MonitoringPage
+              agents={agents}
+              connectingSessions={connectingSessions}
+              connectedByKey={connectedByKey}
+              totalSessions={totalSessions}
+              fullscreenKey={fullscreenKey}
+              fullscreenViewOnly={fullscreenViewOnly}
+              globalError={globalError}
+              actions={monitoringActionsRef.current}
+            />
+          </div>
+        </Suspense>
       )}
       {activePage === "settings" && (
-        <SettingsPage
-          agents={agents}
-          endpointInput={endpointInput}
-          tokenInput={tokenInput}
-          savedAgentsPresent={savedAgentsPresent}
-          onEndpointInputChange={setEndpointInput}
-          onTokenInputChange={setTokenInput}
-          onAddAgent={() => void handleAddAgent()}
-          onConnectAgent={(id) => void connectAgent(id)}
-          onDisconnectAgent={(id) => void handleDisconnectAgent(id)}
-          onRemoveAgent={(id) => void removeAgent(id)}
-        />
+        <Suspense fallback={<PageFallback />}>
+          <SettingsPage
+            agents={agents}
+            endpointInput={endpointInput}
+            tokenInput={tokenInput}
+            savedAgentsPresent={savedAgentsPresent}
+            onEndpointInputChange={setEndpointInput}
+            onTokenInputChange={setTokenInput}
+            onAddAgent={() => void handleAddAgent()}
+            onConnectAgent={(id) => void connectAgent(id)}
+            onDisconnectAgent={(id) => void handleDisconnectAgent(id)}
+            onRemoveAgent={(id) => void removeAgent(id)}
+          />
+        </Suspense>
       )}
-      {activePage === "about" && <AboutPage />}
+      {activePage === "about" && (
+        <Suspense fallback={<PageFallback />}>
+          <AboutPage />
+        </Suspense>
+      )}
     </div>
   );
 }
