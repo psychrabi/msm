@@ -24,6 +24,8 @@ import {
 } from "../lib/agent-storage";
 
 const RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 60000;
+const RECONNECT_JITTER = 0.15;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 
 /** Per-viewer lifecycle flags for one session on one agent. */
@@ -49,6 +51,8 @@ type AgentRuntime = {
   connecting: boolean;
   /** The agent itself was manually disconnected (not its viewers). */
   manualDisconnected: boolean;
+  /** Consecutive failed reconnects; drives the exponential backoff delay. */
+  reconnectAttempts: number;
   viewers: Map<string, ViewerRuntime>;
 };
 
@@ -58,6 +62,7 @@ function newAgentRuntime(): AgentRuntime {
     reconnectTimer: null,
     connecting: false,
     manualDisconnected: false,
+    reconnectAttempts: 0,
     viewers: new Map(),
   };
 }
@@ -200,10 +205,18 @@ export function useAgentConnections() {
     )
       return;
     updateAgent(id, { status: "Reconnecting…" });
+    // Exponential backoff with jitter so many agents that dropped during
+    // the same outage do not all hammer their agents in lockstep.
+    const backoff = Math.min(
+      RECONNECT_DELAY_MS * 2 ** runtime.reconnectAttempts,
+      MAX_RECONNECT_DELAY_MS,
+    );
+    const delay = backoff * (1 - RECONNECT_JITTER + Math.random() * RECONNECT_JITTER * 2);
+    runtime.reconnectAttempts += 1;
     runtime.reconnectTimer = setTimeout(() => {
       runtime.reconnectTimer = null;
       void connectAgent(id, true);
-    }, RECONNECT_DELAY_MS);
+    }, delay);
   }
   async function refreshSessions(id: string) {
     const socket = runtimesRef.current.get(id)?.socket;
@@ -234,6 +247,7 @@ export function useAgentConnections() {
         headers: { Authorization: `Bearer ${agent.token.trim()}` },
       });
       runtime.socket = connection;
+      runtime.reconnectAttempts = 0;
       clearReconnectTimer(id);
       updateAgent(id, { status: "Connected", error: "" });
       addSavedAgent(agent.endpoint);
