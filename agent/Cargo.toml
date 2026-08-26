@@ -17,6 +17,7 @@ path = "src/worker.rs"
 
 [dependencies]
 axum.workspace = true
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 clap.workspace = true
 dirs.workspace = true
 enigo = "0.6.1"
