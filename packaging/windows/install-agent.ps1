@@ -2,15 +2,12 @@
 [CmdletBinding()]
 param(
     [string]$AgentBinaryPath = ".\msm-agent.exe",
-    [string]$WorkerBinaryPath = ".\msm-agent-worker.exe",
-    [string]$TlsCertificatePath = ".\cert.pem",
-    [string]$TlsPrivateKeyPath = ".\key.pem"
+    [string]$WorkerBinaryPath = ".\msm-agent-worker.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $InstallDir = Join-Path $env:ProgramFiles "MSM"
 $DataDir = Join-Path $env:ProgramData "MSM\agent"
-$TlsDir = Join-Path $DataDir "tls"
 $LogDir = Join-Path $DataDir "logs"
 $AgentName = "msm-agent.exe"
 $WorkerName = "msm-agent-worker.exe"
@@ -20,11 +17,9 @@ foreach ($path in @($AgentBinaryPath, $WorkerBinaryPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required binary not found: $path" }
 }
 
-New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $TlsDir, $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $LogDir | Out-Null
 $InstalledAgent = Join-Path $InstallDir $AgentName
 $InstalledWorker = Join-Path $InstallDir $WorkerName
-$InstalledCert = Join-Path $TlsDir "cert.pem"
-$InstalledKey = Join-Path $TlsDir "key.pem"
 
 function Stop-MsmWorkers {
     $workers = @(Get-Process -Name "msm-agent-worker" -ErrorAction SilentlyContinue)
@@ -102,17 +97,6 @@ Start-Sleep -Milliseconds 500
 Copy-Item -LiteralPath $AgentBinaryPath -Destination $InstalledAgent -Force
 Copy-Item -LiteralPath $WorkerBinaryPath -Destination $InstalledWorker -Force
 
-$certSourceExists = Test-Path -LiteralPath $TlsCertificatePath -PathType Leaf
-$keySourceExists = Test-Path -LiteralPath $TlsPrivateKeyPath -PathType Leaf
-if ($certSourceExists -xor $keySourceExists) { throw "TLS certificate and private key must be supplied together." }
-if ($certSourceExists) {
-    Copy-Item -LiteralPath $TlsCertificatePath -Destination $InstalledCert -Force
-    Copy-Item -LiteralPath $TlsPrivateKeyPath -Destination $InstalledKey -Force
-}
-if (-not (Test-Path -LiteralPath $InstalledCert -PathType Leaf) -or -not (Test-Path -LiteralPath $InstalledKey -PathType Leaf)) {
-    throw "Production installation requires TLS certificate and private key. Supply -TlsCertificatePath and -TlsPrivateKeyPath on first install."
-}
-
 Protect-MsmDataAcl
 
 & $InstalledAgent --install-service
@@ -122,9 +106,8 @@ $ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $ServiceConfig) { throw "$ServiceName service was not created." }
 if ($ServiceConfig.StartName -ne "LocalSystem") { throw "$ServiceName was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem." }
 if ($ServiceConfig.PathName -notmatch '--run-service') { throw "$ServiceName has unexpected service command line: $($ServiceConfig.PathName)" }
-if ($ServiceConfig.PathName -notmatch '--tls-cert' -or $ServiceConfig.PathName -notmatch '--tls-key') { throw "$ServiceName is not configured with TLS certificate and key arguments." }
+if ($ServiceConfig.PathName -match '--tls-cert|--tls-key') { throw "$ServiceName unexpectedly contains TLS arguments." }
 
-# Configure automatic service recovery. Reset the failure counter after one day.
 & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 & sc.exe failureflag $ServiceName 1 | Out-Null
 
@@ -148,5 +131,5 @@ if ($Service.Status -ne "Running") { throw "$ServiceName was installed but faile
 Write-Host "MSM agent installed successfully as $ServiceName"
 Write-Host "Service account: LocalSystem"
 Write-Host "Install directory: $InstallDir"
-Write-Host "TLS certificate: $InstalledCert"
+Write-Host "Transport: plain WebSocket on local network"
 Write-Host "Service recovery: restart on first three failures"
