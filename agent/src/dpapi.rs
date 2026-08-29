@@ -50,7 +50,7 @@ fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Erro
     unsafe {
         CryptProtectData(&input, PCWSTR::null(), None, None, None, CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN, &mut output)?;
         let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output.pbData as isize));
+        let _ = LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
         Ok(bytes)
     }
 }
@@ -67,7 +67,7 @@ fn unprotect_machine(protected: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Er
     unsafe {
         CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN, &mut output)?;
         let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output.pbData as isize));
+        let _ = LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
         Ok(bytes)
     }
 }

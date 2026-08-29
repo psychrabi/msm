@@ -1,4 +1,0 @@
-# Keep release agent binaries in the Windows GUI subsystem so the
-# system service and per-session workers never create console windows.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/SUBSYSTEM:WINDOWS"]
