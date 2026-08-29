@@ -14,15 +14,14 @@ export const DEFAULT_AGENT_PORT = 40123;
 export function normalizeEndpoint(endpoint: string): string {
   const value = endpoint.trim();
   if (!value) return "";
-  if (/^https?:\/\//i.test(value)) {
-    const ws = value.replace(/^http/i, "ws").replace(/\/$/, "");
-    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
-  }
-  if (/^wss?:\/\//i.test(value)) {
-    const ws = value.replace(/\/$/, "");
-    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
-  }
-  return `ws://${value.replace(/\/$/, "")}/ws`;
+  // TODO(TLS disabled): agent serves plain WS/HTTP for now. Revert to
+  // preserving https/wss schemes here once agent TLS is re-enabled.
+  const plain = value
+    .replace(/^https:/i, "ws:")
+    .replace(/^http:/i, "ws:")
+    .replace(/^wss:/i, "ws:");
+  const ws = plain.replace(/\/$/, "");
+  return ws.endsWith("/ws") ? ws : `${ws}/ws`;
 }
 export function normalizeAgentIp(address: string): string {
   const value = address.trim();

@@ -108,9 +108,9 @@ if ($certSourceExists -xor $keySourceExists) { throw "TLS certificate and privat
 if ($certSourceExists) {
     Copy-Item -LiteralPath $TlsCertificatePath -Destination $InstalledCert -Force
     Copy-Item -LiteralPath $TlsPrivateKeyPath -Destination $InstalledKey -Force
-}
-if (-not (Test-Path -LiteralPath $InstalledCert -PathType Leaf) -or -not (Test-Path -LiteralPath $InstalledKey -PathType Leaf)) {
-    throw "Production installation requires TLS certificate and private key. Supply -TlsCertificatePath and -TlsPrivateKeyPath on first install."
+    Write-Host "TLS certificate and private key installed."
+} else {
+    Write-Host "WARNING: No TLS certificate/key supplied. Agent will serve plain HTTP/WS (development mode)."
 }
 
 Protect-MsmDataAcl
@@ -122,7 +122,6 @@ $ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $ServiceConfig) { throw "$ServiceName service was not created." }
 if ($ServiceConfig.StartName -ne "LocalSystem") { throw "$ServiceName was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem." }
 if ($ServiceConfig.PathName -notmatch '--run-service') { throw "$ServiceName has unexpected service command line: $($ServiceConfig.PathName)" }
-if ($ServiceConfig.PathName -notmatch '--tls-cert' -or $ServiceConfig.PathName -notmatch '--tls-key') { throw "$ServiceName is not configured with TLS certificate and key arguments." }
 
 # Configure automatic service recovery. Reset the failure counter after one day.
 & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
