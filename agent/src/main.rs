@@ -49,6 +49,10 @@ const SERVICE_DISPLAY_NAME: &str = "MSM Agent";
 const SERVICE_DESCRIPTION: &str = "MSM multiseat remote monitor and control agent";
 #[cfg(windows)]
 const SERVICE_LISTEN: &str = "0.0.0.0:40123";
+#[cfg(windows)]
+const SERVICE_TLS_CERT: &str = r"C:\ProgramData\MSM\agent\tls\cert.pem";
+#[cfg(windows)]
+const SERVICE_TLS_KEY: &str = r"C:\ProgramData\MSM\agent\tls\key.pem";
 #[derive(Debug, Parser, Clone)]
 #[command(name = "msm-agent", version, about = "MSM Windows machine agent")]
 struct Args {
@@ -550,6 +554,13 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
         service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType},
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
+    if !PathBuf::from(SERVICE_TLS_CERT).is_file() || !PathBuf::from(SERVICE_TLS_KEY).is_file() {
+        return Err(
+            format!(
+                "TLS certificate and key must exist at {SERVICE_TLS_CERT} and {SERVICE_TLS_KEY} before installing the service"
+            ).into()
+        );
+    }
     let m = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -562,7 +573,13 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path: PathBuf::from(&executable_path),
-        launch_arguments: vec![OsString::from("--run-service")],
+        launch_arguments: vec![
+            OsString::from("--run-service"),
+            OsString::from("--tls-cert"),
+            OsString::from(SERVICE_TLS_CERT),
+            OsString::from("--tls-key"),
+            OsString::from(SERVICE_TLS_KEY),
+        ],
         dependencies: vec![],
         account_name: None,
         account_password: None,
@@ -581,7 +598,7 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
     }
     let service = m.create_service(&info, access)?;
     service.set_description(SERVICE_DESCRIPTION)?;
-    println!("MSM Agent service installed.");
+    println!("MSM Agent service installed with TLS.");
     Ok(())
 }
 #[cfg(windows)]
@@ -698,8 +715,8 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
             SERVICE_LISTEN
                 .parse()
                 .expect("valid service listen address"),
-            None,
-            None,
+            Some(PathBuf::from(SERVICE_TLS_CERT)),
+            Some(PathBuf::from(SERVICE_TLS_KEY)),
             async move {
                 let _ = stop_rx_async.await;
             },
@@ -768,7 +785,6 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
     Err("Windows only".into())
 }
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
     let args = Args::parse();
     if args.print_identity {
         let i = load_or_create_identity()?;

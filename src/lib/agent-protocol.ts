@@ -11,35 +11,39 @@ export type AgentConnection = { id: string; endpoint: string; token: string; ide
 export type SavedAgent = { endpoint: string };
 export type RemoteConnection = RemoteSession & { agentId: string; username: string };
 export const DEFAULT_AGENT_PORT = 40123;
+
+/** Normalize all remote Agent endpoints to secure WebSocket transport. */
 export function normalizeEndpoint(endpoint: string): string {
   const value = endpoint.trim();
   if (!value) return "";
-  // TODO(TLS disabled): agent serves plain WS/HTTP for now. Revert to
-  // preserving https/wss schemes here once agent TLS is re-enabled.
-  const plain = value
-    .replace(/^https:/i, "ws:")
-    .replace(/^http:/i, "ws:")
-    .replace(/^wss:/i, "ws:");
-  const ws = plain.replace(/\/$/, "");
-  return ws.endsWith("/ws") ? ws : `${ws}/ws`;
+  const secure = value
+    .replace(/^https:/i, "wss:")
+    .replace(/^http:/i, "wss:")
+    .replace(/^ws:/i, "wss:");
+  const normalized = secure.replace(/\/$/, "");
+  return normalized.endsWith("/ws") ? normalized : `${normalized}/ws`;
 }
+
 export function normalizeAgentIp(address: string): string {
   const value = address.trim();
   if (!value) return "";
-  if (/^https?:\/\//i.test(value) || /^wss?:\/\//i.test(value)) return normalizeEndpoint(value);
+  if (/^https?:\/\//i.test(value) || /^wss?:\/\//i.test(value)) {
+    return normalizeEndpoint(value);
+  }
   if (value.startsWith("[")) {
     const closing = value.indexOf("]");
     if (closing < 0) return "";
     const host = value.slice(1, closing);
     const suffix = value.slice(closing + 1);
-    return normalizeEndpoint(`ws://[${host}]${suffix || `:${DEFAULT_AGENT_PORT}`}/ws`);
+    return normalizeEndpoint(`wss://[${host}]${suffix || `:${DEFAULT_AGENT_PORT}`}/ws`);
   }
   if ((value.match(/:/g) ?? []).length > 1) {
-    return normalizeEndpoint(`ws://[${value}]:${DEFAULT_AGENT_PORT}/ws`);
+    return normalizeEndpoint(`wss://[${value}]:${DEFAULT_AGENT_PORT}/ws`);
   }
-  if (value.includes(":")) return normalizeEndpoint(`ws://${value}/ws`);
-  return normalizeEndpoint(`ws://${value}:${DEFAULT_AGENT_PORT}/ws`);
+  if (value.includes(":")) return normalizeEndpoint(`wss://${value}/ws`);
+  return normalizeEndpoint(`wss://${value}:${DEFAULT_AGENT_PORT}/ws`);
 }
+
 export function isValidAgentIp(address: string): boolean {
   const value = address.trim();
   if (!value || /\s/.test(value)) return false;
