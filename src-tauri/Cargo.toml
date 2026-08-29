@@ -1,6 +1,6 @@
 [package]
 name = "msm"
-version = "0.1.0"
+version = "1.0.0"
 description = "Multiseat VNC remote monitor and control"
 authors = ["psychrabi"]
 edition.workspace = true

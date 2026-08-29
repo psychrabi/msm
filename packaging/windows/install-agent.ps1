@@ -39,6 +39,25 @@ function Stop-MsmWorkers {
     throw "MSM worker process(es) are still running: $remainingIds"
 }
 
+function Invoke-MsmAgentCommand {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory)]
+        [string[]]$ArgumentList
+    )
+
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $ArgumentList `
+        -Wait `
+        -PassThru `
+        -WindowStyle Hidden
+
+    return $process.ExitCode
+}
+
 function Stop-MsmServiceAndWait {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $service) { return }
@@ -60,8 +79,9 @@ function Uninstall-MsmServiceAndWait {
     $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $service) { return }
     Write-Host "Uninstalling $ServiceName service..."
-    & $InstalledAgent --uninstall-service 2>$null
-    $uninstallExitCode = $LASTEXITCODE
+    $uninstallExitCode = Invoke-MsmAgentCommand `
+    -FilePath $InstalledAgent `
+    -ArgumentList @("--uninstall-service")
     $deadline = (Get-Date).AddSeconds(10)
     do {
         $remaining = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -99,8 +119,22 @@ Copy-Item -LiteralPath $WorkerBinaryPath -Destination $InstalledWorker -Force
 
 Protect-MsmDataAcl
 
-& $InstalledAgent --install-service
-if ($LASTEXITCODE -ne 0) { throw "MSM Agent service installation failed (exit code $LASTEXITCODE)." }
+Write-Host "Installing $ServiceName service..."
+
+$installExitCode = Invoke-MsmAgentCommand `
+    -FilePath $InstalledAgent `
+    -ArgumentList @("--install-service")
+
+if ($installExitCode -ne 0) {
+    throw "MSM Agent service installation failed (exit code $installExitCode)."
+}
+
+Write-Host "$ServiceName service installation command completed (exit code $installExitCode)."
+
+$installedService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if (-not $installedService) {
+    throw "$ServiceName service was not created even though --install-service succeeded."
+}
 
 $ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $ServiceConfig) { throw "$ServiceName service was not created." }
@@ -116,9 +150,14 @@ New-NetFirewallRule -DisplayName "MSM Agent" -Direction Inbound -Protocol TCP -L
 Get-NetFirewallRule -DisplayName "MSM VNC Local Only" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName "MSM VNC Local Only" -Direction Inbound -Protocol TCP -LocalPort 5901-5999 -Action Block -Profile Any | Out-Null
 
-& $InstalledAgent --start-service
-if ($LASTEXITCODE -ne 0) { throw "MSM Agent service start failed (exit code $LASTEXITCODE)." }
+Write-Host "Starting $ServiceName service..."
 
+try {
+    Start-Service -Name $ServiceName -ErrorAction Stop
+}
+catch {
+    throw "MSM Agent service start failed: $($_.Exception.Message)"
+}
 $deadline = (Get-Date).AddSeconds(20)
 do {
     $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -133,3 +172,33 @@ Write-Host "Service account: LocalSystem"
 Write-Host "Install directory: $InstallDir"
 Write-Host "Transport: plain WebSocket on local network"
 Write-Host "Service recovery: restart on first three failures"
+
+
+$TokenPath = Join-Path $DataDir "access-token"
+
+if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) {
+    throw "MSM Agent installed successfully, but access token was not created at $TokenPath"
+}
+
+$AccessToken = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
+
+if ([string]::IsNullOrWhiteSpace($AccessToken)) {
+    throw "MSM Agent access token file exists but is empty."
+}
+
+Write-Host ""
+Write-Host "========================================"
+Write-Host "MSM Agent installed successfully"
+Write-Host "========================================"
+Write-Host "Service:     $ServiceName"
+Write-Host "Account:     LocalSystem"
+Write-Host "Install:     $InstallDir"
+Write-Host "Transport:   plain WebSocket"
+Write-Host "Endpoint:    ws://<AGENT-IP>:40123/ws"
+Write-Host ""
+Write-Host "Access token:"
+Write-Host $AccessToken
+Write-Host ""
+Write-Host "Token file:"
+Write-Host $TokenPath
+Write-Host "========================================"

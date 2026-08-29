@@ -1,6 +1,6 @@
 [package]
 name = "msm-agent"
-version = "0.1.0"
+version = "1.0.0"
 description = "MSM Windows machine agent"
 authors = ["psychrabi"]
 edition.workspace = true
