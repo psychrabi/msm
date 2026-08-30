@@ -1,149 +1,201 @@
 # MSM
 
-MSM is a VNC-based remote monitor and control application for Windows multiseat workstations.
+MSM is a Windows multiseat remote-monitoring and remote-viewing application. A Tauri desktop Viewer connects to one or more Windows Agents; each Agent runs as a LocalSystem service and supervises one VNC worker per eligible interactive Windows session.
 
-## Architecture
+## Current release target
 
-MSM is one Git repository containing two independently runnable applications:
+The current release target is a **trusted private-LAN deployment**.
+
+Agent control traffic uses authenticated plain WebSocket:
+
+```text
+Viewer
+  │
+  └── ws://<agent-host>:40123/ws
+          │
+          ▼
+     MSM Agent service
+          │
+          ├── session discovery
+          ├── worker watchdog
+          └── ws://.../vnc/<session>?ticket=...
+                    │
+                    ▼
+             msm-agent-worker
+```
+
+The current transport is intentionally **not suitable for the public Internet or an untrusted network**. TLS/WSS is a deferred hardening milestone.
+
+## Components
 
 ```text
 msm/
-├── agent/          # headless Rust Windows machine agent + per-session worker
-├── src-tauri/      # Tauri desktop viewer backend
-├── src/            # React/TypeScript viewer UI
-└── docs/           # architecture and release documentation
+├── agent/          # Rust Windows Agent + per-session worker
+├── src-tauri/      # Tauri desktop Viewer backend
+├── src/            # React/TypeScript Viewer UI
+├── packaging/      # Windows Agent/application packaging
+└── docs/           # Architecture, hardening, and release documentation
 ```
 
-The **viewer** is installed on the operator computer. The **agent** is installed independently on every Windows computer that should be remotely monitored or controlled.
+### Agent
+
+The Agent provides:
+
+- persistent device identity;
+- persistent LAN access token;
+- authenticated `/health` endpoint;
+- authenticated `/ws` control WebSocket;
+- Windows Terminal Services session discovery;
+- one worker per eligible interactive session;
+- worker crash recovery with bounded exponential backoff;
+- session disappearance cleanup;
+- session-scoped VNC tickets with a five-minute TTL;
+- WebSocket-to-loopback-VNC proxying;
+- Windows service installation/start/stop/uninstall operations.
+
+The Agent and worker are built as release Windows GUI-subsystem binaries, so operators should not depend on console output from installed services.
+
+### Worker
+
+Each worker runs in the target user's Windows session and owns the desktop/VNC path for that session. Worker credentials are randomly generated and are independent from the Agent access token.
+
+The worker VNC ports are allocated from `5901-5999` and are expected to bind only to loopback. The installer also blocks inbound access to this range so remote viewers use the Agent proxy rather than connecting directly to a worker.
+
+### Viewer
+
+The Viewer supports:
+
+- multiple Agent connections;
+- native Windows credential persistence for saved Agent credentials;
+- explicit connect/disconnect lifecycle;
+- session selection and remote VNC viewing;
+- view-only/control modes;
+- mouse and keyboard input;
+- bidirectional text clipboard bridging.
+
+## Agent authentication
+
+The Agent access token is currently stored as plaintext at:
 
 ```text
-                 MSM Viewer
-              Tauri + React
-                    │
-                  WSS
-                    │
-        ┌───────────┼───────────┐
-        ▼           ▼           ▼
-      Agent A     Agent B     Agent C
-        │           │           │
-     Sessions    Sessions    Sessions
+C:\ProgramData\MSM\agent\access-token
 ```
 
-## Windows-only scope
+The installer restricts the Agent data directory to `SYSTEM` and `BUILTIN\Administrators`. The token must still be treated as a secret. The Viewer stores remembered credentials in the native Windows credential store rather than browser storage.
 
-The current product target is **Windows only**. Linux and macOS implementations are intentionally not maintained at this stage.
+The Agent token is never reused as the VNC password. VNC access is granted through a short-lived, session-bound VNC ticket returned by the authenticated Agent control channel.
 
-## Current stack
+## Build
 
-- Rust for the machine agent, per-session worker, VNC/RFB server integration, and Windows integration.
-- Tauri 2 for the desktop viewer shell.
-- React + TypeScript + Vite for the viewer UI.
-- `rustvncserver` for RFB/VNC server functionality.
-- `xcap` for Windows desktop capture.
-- `enigo` for Windows keyboard/mouse input injection.
-- `windows` crate for Windows Terminal Services/session APIs, user-session process creation, DPAPI, and clipboard integration.
-- `@novnc/novnc` for the viewer-side VNC client.
-- Native Windows credential storage for viewer-side persisted agent credentials.
-- Native rustls TLS for Agent transport encryption.
+Requirements:
 
-## Multiseat model
+- Windows for the full Agent/worker path;
+- Rust toolchain matching `rust-version` in the workspace;
+- Bun;
+- Tauri prerequisites for the desktop application.
 
-A physical Windows computer can contain multiple independent logged-in sessions. Each session is a first-class remote-control target.
+Install frontend dependencies:
 
-```text
-Device
-├── Agent service (LocalSystem)
-│   ├── Seat 1 / Session 1
-│   │   └── msm-agent-worker → VNC :5901
-│   ├── Seat 2 / Session 2
-│   │   └── msm-agent-worker → VNC :5902
-│   └── Seat 3 / Session 3
-│       └── msm-agent-worker → VNC :5903
+```powershell
+bun install --frozen-lockfile
 ```
 
-The Windows service remains running independently of interactive user sessions. It discovers eligible sessions and launches workers in the corresponding user's Windows session. If a worker exits unexpectedly, bounded watchdog backoff restores it without creating an unbounded spawn loop.
+Build the workspace:
 
-## Agent security
-
-Production service mode requires TLS certificate and private key files:
-
-```text
-C:\ProgramData\MSM\agent\tls\cert.pem
-C:\ProgramData\MSM\agent\tls\key.pem
+```powershell
+cargo check --workspace
+cargo test --workspace
+bun run build
 ```
 
-The Agent token is stored with Windows DPAPI machine protection. Legacy plaintext token files are migrated on startup. Worker VNC passwords are random and independent from the Agent token. Viewer VNC connections use short-lived session-bound tickets rather than placing the long-lived Agent token in the VNC URL.
+For the Windows Agent release binaries:
 
-The worker VNC port range is loopback-only by design and is blocked by the installer firewall rule from inbound network access. Remote access should use the authenticated Agent WSS proxy.
+```powershell
+cargo build --release -p msm-agent
+```
 
-## Local development
+## Local Agent testing
 
-The Agent can still be run without TLS for local development:
+For a local non-service run:
 
 ```powershell
 cargo run -p msm-agent -- --listen 127.0.0.1:40123
 ```
 
-This development mode is intentionally not a production network configuration.
-
-For a TLS Agent, provide both files:
+For LAN testing:
 
 ```powershell
-cargo run -p msm-agent -- \
-  --listen 0.0.0.0:40123 \
-  --tls-cert C:\secure\cert.pem \
-  --tls-key C:\secure\key.pem
+cargo run -p msm-agent -- --listen 0.0.0.0:40123
 ```
 
-The Viewer production endpoint is:
+Retrieve the persisted identity/token during controlled provisioning with:
 
-```text
-wss://<agent-host>:40123/ws
+```powershell
+.\target\release\msm-agent.exe --print-identity
 ```
 
-## Windows service installation
+Because release builds use the Windows GUI subsystem, do not rely on console output. Read the provisioned token from:
 
-Build both binaries and provision the TLS assets out-of-band:
+```powershell
+Get-Content C:\ProgramData\MSM\agent\access-token
+```
+
+Only perform that operation on the Agent machine and treat the result as a secret.
+
+## Windows Agent installation
+
+Build both Agent binaries and run the installer from an elevated PowerShell session:
 
 ```powershell
 .\packaging\windows\install-agent.ps1 `
   -AgentBinaryPath .\target\release\msm-agent.exe `
-  -WorkerBinaryPath .\target\release\msm-agent-worker.exe `
-  -TlsCertificatePath C:\secure\msm-agent-cert.pem `
-  -TlsPrivateKeyPath C:\secure\msm-agent-key.pem
+  -WorkerBinaryPath .\target\release\msm-agent-worker.exe
 ```
 
-The installer registers `msm-agent` as a LocalSystem Windows service, configures automatic service recovery, applies restrictive data-directory ACLs, permits the TLS Agent port, and blocks inbound access to the internal VNC port range.
+The installer:
 
-Subsequent upgrades preserve the existing TLS certificate and key when replacement paths are omitted.
+1. stops active workers;
+2. stops and removes the previous `MSMAgent` service;
+3. copies the Agent and worker binaries to `C:\Program Files\MSM`;
+4. preserves existing identity/token state;
+5. applies restrictive Agent data-directory ACLs;
+6. installs `MSMAgent` as `LocalSystem`;
+7. configures SCM recovery actions;
+8. allows TCP/40123 on Domain/Private profiles;
+9. blocks TCP/5901-5999 inbound;
+10. starts the service and waits for `Running`.
 
-## Viewer
+The installation is intended to be safe to repeat for upgrades.
 
-Install dependencies and start the Tauri application:
+## Testing
 
-```bash
-bun install
-bun run tauri dev
-```
+The automated production gate covers:
 
-On the first connection, enter the Agent WSS URL and the access token printed by `--print-identity` during controlled provisioning. Enable **Remember** to persist the connection in the viewer's native credential store.
-
-Saved credentials are associated with the Agent endpoint. **Forget** removes the saved endpoint and its native credential. If an Agent rejects a saved credential with `401 Unauthorized`, the viewer clears that credential instead of retrying indefinitely.
-
-Sessions are **not** opened automatically when the Agent connects. Switching pages or sessions does not implicitly reconnect or replace an existing remote viewer.
-
-The default viewer mode is **View only**. Control mode can be enabled explicitly.
-
-## Production gates
-
-GitHub Actions now validates:
-
-- frontend dependency installation and production build;
-- workspace Rust compilation and tests;
+- frontend frozen-lockfile installation and build;
+- Rust formatting/check/test/Clippy;
 - Windows Agent release compilation;
-- Tauri application build;
-- Agent packaging script.
+- Tauri packaging;
+- Agent packaging.
 
-The final release procedure is documented in [`docs/release-checklist.md`](docs/release-checklist.md), with security and operational details in [`docs/production-hardening.md`](docs/production-hardening.md).
+The Agent worker supervisor also contains unit coverage for retry backoff and worker-port allocation.
 
-A production release additionally requires clean-machine installer testing, TLS certificate validation, Windows code signing, a representative soak test, and completion of every checklist item.
+Windows integration testing still needs to validate service lifecycle, multi-session behavior, worker crash recovery, clipboard, input, firewall behavior, upgrade/uninstall, and the 24-hour soak procedure. Use `docs/release-checklist.md` as the authoritative release gate.
+
+## Security boundary
+
+The current LAN build should be deployed only where the network path is trusted. Do not expose port `40123` to the public Internet.
+
+Deferred hardening for an untrusted-network/Internet deployment includes:
+
+- TLS/WSS Agent transport;
+- DPAPI-backed Agent token storage;
+- token rotation/revocation;
+- certificate provisioning and SAN validation;
+- bounded rotating service logs;
+- stronger Internet-facing authorization and network policy.
+
+See:
+
+- `docs/architecture.md`
+- `docs/production-hardening.md`
+- `docs/release-checklist.md`
