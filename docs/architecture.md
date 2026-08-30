@@ -21,18 +21,18 @@ The session ID is the durable remote-control target. VNC ports and worker PIDs a
 
 ## Transport
 
-Production service mode uses native rustls TLS:
+The current release uses authenticated plain WebSocket on the trusted LAN:
 
 ```text
 Viewer
   │
-  │ WSS + Bearer Agent token
+  │ WS + Bearer Agent token
   ▼
 MSM Agent :40123
   │
   │ short-lived session ticket
   ▼
-WSS VNC proxy
+WS VNC proxy
   │
   │ loopback TCP only
   ▼
@@ -41,24 +41,23 @@ Worker VNC :590x
 
 The long-lived Agent token is never placed in the VNC URL. A random session-bound VNC ticket is issued over the authenticated control WebSocket and expires after five minutes.
 
-Direct `ws://` operation is development-only. The Viewer defaults to `wss://`, and the VNC viewer rejects non-TLS endpoints.
+`ws://` is the active transport for this release. It is a trusted-LAN boundary, not an Internet security boundary.
 
 ## Credential model
 
 - Agent tokens are generated independently from VNC passwords.
-- Agent tokens are stored with Windows DPAPI machine protection.
+- The Agent token is currently stored as plaintext in `C:\ProgramData\MSM\agent\access-token`.
 - The Agent data directory is ACL-restricted to LocalSystem and Administrators by the installer.
-- Legacy plaintext token files are migrated to DPAPI storage on startup.
 - Each worker receives a random VNC password.
 - VNC access is additionally gated by a short-lived, session-bound ticket.
 
-DPAPI machine scope and the directory ACL are defense-in-depth and do not protect against a compromised SYSTEM account.
+The repository contains a DPAPI implementation as deferred hardening work; it is not used by the active token-storage path.
 
 ## Windows service lifecycle
 
 The Windows service is the machine-level supervisor. It runs independently of interactive user sessions and periodically reconciles active sessions with its worker registry.
 
-For each eligible interactive session it ensures exactly one worker exists. If a worker exits while its session remains active, the supervisor respawns it. Worker start failures use bounded exponential-style backoff up to 60 seconds to prevent tight process-spawn loops.
+For each eligible interactive session it ensures exactly one worker exists. If a worker exits while its session remains active, the supervisor respawns it. Worker start failures use bounded exponential backoff up to 60 seconds to prevent tight process-spawn loops.
 
 When a session disappears, its worker is terminated and the worker state is removed.
 
@@ -76,7 +75,7 @@ The installer blocks inbound access to TCP `5901-5999`, so the Agent proxy is th
 
 ## Viewer responsibilities
 
-The viewer owns device/session selection, noVNC rendering, connection state, persistent Agent connections, credential retrieval, clipboard integration, and operator controls. Agent connections and individual VNC viewers remain independently managed.
+The Viewer owns device/session selection, noVNC rendering, connection state, persistent Agent connections, credential retrieval, clipboard integration, and operator controls. Agent connections and individual VNC viewers remain independently managed.
 
 The default viewer mode is View only. Control mode is explicit.
 
@@ -91,22 +90,17 @@ The Windows installer configures SCM recovery actions:
 
 This is separate from the Agent's per-worker watchdog recovery.
 
-## TLS assets
-
-Production service installation expects:
-
-```text
-C:\ProgramData\MSM\agent\tls\cert.pem
-C:\ProgramData\MSM\agent\tls\key.pem
-```
-
-The private key is provisioned out-of-band and is never generated or committed by the repository. The service is installed with explicit `--tls-cert` and `--tls-key` arguments.
-
 ## Local development
 
-A developer can run the Agent without TLS on loopback or a controlled LAN test address. This mode is intentionally not the production network boundary.
+A developer can run the Agent without the Windows service on loopback or a controlled LAN test address:
 
-## Remaining product limitations
+```powershell
+cargo run -p msm-agent -- --listen 127.0.0.1:40123
+```
+
+For LAN testing, bind explicitly to the machine's LAN interface or `0.0.0.0:40123` and keep the network trusted.
+
+## Current limitations and deferred hardening
 
 - primary-monitor capture only;
 - fixed initial capture cadence;
@@ -114,6 +108,9 @@ A developer can run the Agent without TLS on loopback or a controlled LAN test a
 - text clipboard only;
 - monitor hotplug and display topology need broader soak testing;
 - production logging sink and retention still depend on deployment configuration;
-- Windows code signing and final release artifact verification are release-gate responsibilities.
+- Windows code signing and final release artifact verification are release-gate responsibilities;
+- TLS/WSS transport is not yet implemented in the active release;
+- DPAPI-backed Agent token storage is not yet enabled;
+- token rotation/revocation is not yet implemented.
 
 See `docs/production-hardening.md` and `docs/release-checklist.md` for operational and release requirements.
