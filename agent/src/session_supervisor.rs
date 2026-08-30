@@ -30,13 +30,18 @@ fn run_watchdog(state: AppState) {
         thread::sleep(WATCHDOG_INTERVAL);
     }
 }
+fn retry_delay(failure_count: u32) -> Duration {
+    Duration::from_secs(
+        (3u64).saturating_mul(1u64 << failure_count.saturating_sub(1).min(4)),
+    )
+    .min(MAX_RETRY_DELAY)
+}
 fn retry_allowed(state: &AppState, session_id: u32) -> bool {
     let failures = state.worker_failures.blocking_lock();
     let Some((count, at)) = failures.get(&session_id) else {
         return true;
     };
-    let delay = Duration::from_secs((3u64).saturating_mul(1u64 << count.saturating_sub(1).min(4)));
-    at.elapsed() >= delay.min(MAX_RETRY_DELAY)
+    at.elapsed() >= retry_delay(*count)
 }
 fn record_failure(state: &AppState, session_id: u32) {
     let mut failures = state.worker_failures.blocking_lock();
@@ -281,5 +286,51 @@ fn is_process_alive(pid: u32) -> bool {
     {
         let _ = pid;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker(port: u16, session_id: u32) -> RemoteSession {
+        RemoteSession {
+            session_id: session_id.to_string(),
+            port,
+            vnc_password: "test-password".to_owned(),
+            vnc_ticket: String::new(),
+            worker_pid: 1,
+        }
+    }
+
+    #[test]
+    fn retry_delay_is_exponential_and_bounded() {
+        assert_eq!(retry_delay(1), Duration::from_secs(3));
+        assert_eq!(retry_delay(2), Duration::from_secs(6));
+        assert_eq!(retry_delay(3), Duration::from_secs(12));
+        assert_eq!(retry_delay(5), Duration::from_secs(48));
+        assert_eq!(retry_delay(6), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(u32::MAX), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn allocates_lowest_available_port() {
+        let mut workers = std::collections::HashMap::new();
+        assert_eq!(allocate_worker_port(&workers), Some(FIRST_VNC_PORT));
+
+        workers.insert(1, worker(FIRST_VNC_PORT, 1));
+        assert_eq!(allocate_worker_port(&workers), Some(FIRST_VNC_PORT + 1));
+
+        workers.insert(2, worker(FIRST_VNC_PORT + 1, 2));
+        assert_eq!(allocate_worker_port(&workers), Some(FIRST_VNC_PORT + 2));
+    }
+
+    #[test]
+    fn port_allocator_returns_none_when_range_is_exhausted() {
+        let mut workers = std::collections::HashMap::new();
+        for (offset, port) in (FIRST_VNC_PORT..=MAX_VNC_PORT).enumerate() {
+            workers.insert(offset as u32, worker(port, offset as u32));
+        }
+        assert_eq!(allocate_worker_port(&workers), None);
     }
 }
