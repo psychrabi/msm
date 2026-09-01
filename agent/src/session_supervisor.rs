@@ -16,7 +16,7 @@ pub fn start(state: AppState) {
     thread::Builder::new().name("msm-worker-watchdog".to_owned()).spawn(move || run_watchdog(state)).expect("failed to start MSM worker watchdog");
 }
 fn run_watchdog(state: AppState) { info!("MSM worker watchdog started"); loop { reconcile(&state); thread::sleep(WATCHDOG_INTERVAL); } }
-fn retry_delay(failure_count: u32) -> Duration { Duration::from_secs((3u64).saturating_mul(1u64 << failure_count.saturating_sub(1).min(4))).min(MAX_RETRY_DELAY) }
+fn retry_delay(failure_count: u32) -> Duration { Duration::from_secs((3u64).saturating_mul(1u64 << failure_count.saturating_sub(1).min(5))).min(MAX_RETRY_DELAY) }
 fn retry_allowed(state: &AppState, session_id: u32) -> bool { let failures = state.worker_failures.blocking_lock(); let Some((count, at)) = failures.get(&session_id) else { return true; }; at.elapsed() >= retry_delay(*count) }
 fn record_failure(state: &AppState, session_id: u32) { let mut failures = state.worker_failures.blocking_lock(); let entry = failures.entry(session_id).or_insert((0, Instant::now())); entry.0 = entry.0.saturating_add(1); entry.1 = Instant::now(); warn!(session_id, attempt=entry.0, "worker start failure recorded; retry backoff active"); }
 fn clear_failure(state: &AppState, session_id: u32) { state.worker_failures.blocking_lock().remove(&session_id); }
