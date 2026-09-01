@@ -2,18 +2,27 @@ name: production-gate
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    tags:
+      - "v*"
 
 jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - run: bun install --frozen-lockfile
       - run: bun run build
 
@@ -21,10 +30,27 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-agent-release
+          cache-on-failure: true
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - run: bun install --frozen-lockfile
       - run: cargo build --release -p msm-agent
       - run: cargo test -p msm-agent
