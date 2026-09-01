@@ -1,4 +1,4 @@
-name: production-gate
+name: Build and Test
 
 on:
   push:
@@ -6,12 +6,17 @@ on:
       - "v*"
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  test-and-build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
 
-      - uses: oven-sh/setup-bun@v2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
@@ -23,37 +28,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
 
-      - run: bun install --frozen-lockfile
-      - run: bun run build
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
-  windows-agent:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows-agent-release
+          shared-key: windows-x86_64-release
           cache-on-failure: true
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
-      - name: Cache Bun packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+      - name: Cargo check
+        run: cargo check --workspace --target x86_64-pc-windows-msvc
 
-      - run: bun install --frozen-lockfile
-      - run: cargo build --release -p msm-agent
-      - run: cargo test -p msm-agent
-      - run: bun run build
-      - run: bun run installer:app
-      - run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-agent.ps1
+      - name: Cargo test
+        run: cargo test --workspace --target x86_64-pc-windows-msvc
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Build Windows Agent
+        run: cargo build --release -p msm-agent --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri app
+        run: bun run installer:app
+
+      - name: Package Windows Agent
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build-agent.ps1
