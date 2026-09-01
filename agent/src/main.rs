@@ -465,20 +465,24 @@ async fn start_session(
 ) -> Result<RemoteSession, Box<dyn std::error::Error + Send + Sync>> {
     let id: u32 = session_id.parse()?;
     let monitors = read_monitors(id);
-    if !monitors.is_empty() && !monitors.iter().any(|monitor| monitor.index == monitor_index) {
+    if !monitors.is_empty()
+        && !monitors
+            .iter()
+            .any(|monitor| monitor.index == monitor_index)
+    {
         return Err(format!("monitor {monitor_index} is unavailable for session {id}").into());
     }
-    let mut session =
-        session_supervisor::ensure_session_monitor(state, id, monitor_index).await?;
+    let mut session = session_supervisor::ensure_session_monitor(state, id, monitor_index).await?;
     let ticket = uuid::Uuid::new_v4().to_string();
     let key = WorkerKey {
         session_id: id,
         monitor_index,
     };
-    state.vnc_tickets.lock().await.insert(
-        ticket.clone(),
-        (key, Instant::now() + VNC_TICKET_TTL),
-    );
+    state
+        .vnc_tickets
+        .lock()
+        .await
+        .insert(ticket.clone(), (key, Instant::now() + VNC_TICKET_TTL));
     session.vnc_ticket = ticket;
     Ok(session)
 }
@@ -696,7 +700,10 @@ fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync
     };
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     manager
-        .open_service(SERVICE_NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)?
+        .open_service(
+            SERVICE_NAME,
+            ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+        )?
         .start::<&str>(&[])?;
     Ok(())
 }
@@ -709,7 +716,10 @@ fn stop_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>
     };
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let _ = manager
-        .open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::QUERY_STATUS)?
+        .open_service(
+            SERVICE_NAME,
+            ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
+        )?
         .stop()?;
     Ok(())
 }
@@ -731,19 +741,18 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
 
     fn service_main(_: Vec<OsString>) {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
-        let status_handle = match service_control_handler::register(SERVICE_NAME, move |event| {
-            match event {
+        let status_handle =
+            match service_control_handler::register(SERVICE_NAME, move |event| match event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
                     let _ = stop_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 _ => ServiceControlHandlerResult::NotImplemented,
-            }
-        }) {
-            Ok(handle) => handle,
-            Err(_) => return,
-        };
+            }) {
+                Ok(handle) => handle,
+                Err(_) => return,
+            };
 
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -755,7 +764,10 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
             process_id: None,
         });
 
-        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
             Ok(runtime) => runtime,
             Err(_) => return,
         };
@@ -766,7 +778,9 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
             let _ = stop_tx_async.send(());
         });
         let server = runtime.spawn(run_server(
-            SERVICE_LISTEN.parse().expect("valid service listen address"),
+            SERVICE_LISTEN
+                .parse()
+                .expect("valid service listen address"),
             async move {
                 let _ = stop_rx_async.await;
             },
