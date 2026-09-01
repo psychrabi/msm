@@ -101,11 +101,39 @@ function Uninstall-MsmServiceAndWait {
 }
 
 function Protect-MsmDataAcl {
+    # Keep credentials/identity private. Interactive session workers need to
+    # publish monitors-<session>.json in this directory, so they may create
+    # new files but receive no access to existing protected files.
     $acl = Get-Acl $DataDir
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRule($rule) | Out-Null }
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("BUILTIN\Administrators","FullControl","ContainerInherit,ObjectInherit","None","Allow")))
+    Set-Acl -Path $DataDir -AclObject $acl
+}
+
+function Enable-MsmWorkerMetadataAcl {
+    # The worker runs as the logged-on session user, not LocalSystem. Grant only
+    # directory-level file creation plus creator ownership on newly-created
+    # children. Existing access-token and identity.json keep their SYSTEM/Admin
+    # ACLs and are not readable/writable by normal users.
+    $acl = Get-Acl $DataDir
+    $createRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "BUILTIN\Users",
+        "CreateFiles",
+        "None",
+        "None",
+        "Allow"
+    )
+    $creatorRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        "CREATOR OWNER",
+        "Modify",
+        "ContainerInherit,ObjectInherit",
+        "InheritOnly",
+        "Allow"
+    )
+    $acl.AddAccessRule($createRule)
+    $acl.AddAccessRule($creatorRule)
     Set-Acl -Path $DataDir -AclObject $acl
 }
 
@@ -117,7 +145,15 @@ Start-Sleep -Milliseconds 500
 Copy-Item -LiteralPath $AgentBinaryPath -Destination $InstalledAgent -Force
 Copy-Item -LiteralPath $WorkerBinaryPath -Destination $InstalledWorker -Force
 
+# Start from the strict ACL, initialize the protected identity/token while only
+# administrators can create files, then open the narrow worker metadata path.
 Protect-MsmDataAcl
+$identityExitCode = Invoke-MsmAgentCommand -FilePath $InstalledAgent -ArgumentList @("--print-identity")
+if ($identityExitCode -ne 0) {
+    throw "MSM Agent identity/token initialization failed (exit code $identityExitCode)."
+}
+Get-ChildItem -LiteralPath $DataDir -Filter "monitors-*.json*" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Enable-MsmWorkerMetadataAcl
 
 Write-Host "Installing $ServiceName service..."
 
@@ -172,7 +208,6 @@ Write-Host "Service account: LocalSystem"
 Write-Host "Install directory: $InstallDir"
 Write-Host "Transport: plain WebSocket on local network"
 Write-Host "Service recovery: restart on first three failures"
-
 
 $TokenPath = Join-Path $DataDir "access-token"
 
