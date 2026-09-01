@@ -1,83 +1,80 @@
 # MSM Production Hardening
 
-## Security model
+## Current transport and credential model
 
-The MSM Agent exposes an authenticated control WebSocket and a VNC WebSocket proxy. Production service mode now requires native TLS using a PEM certificate and private key stored under:
+The current Agent deployment target is a trusted private-LAN environment and uses authenticated plain WebSocket transport:
 
-- `C:\ProgramData\MSM\agent\tls\cert.pem`
-- `C:\ProgramData\MSM\agent\tls\key.pem`
+- control endpoint: `ws://<agent-host>:40123/ws`
+- health endpoint: `http://<agent-host>:40123/health`
+- VNC proxy endpoint: `ws://<agent-host>:40123/vnc/<session-id>/<monitor-index>?ticket=<ticket>`
+- internal worker/VNC ports: `127.0.0.1:5901-5999`
 
-The Windows service is installed with `--tls-cert` and `--tls-key` arguments and will not install without both files.
+This is intentionally **not an Internet-safe transport**. Do not expose TCP/40123 outside a trusted network boundary.
 
-The Viewer defaults to `wss://` for agent endpoints. Explicit `ws://` operation is development-only; the VNC viewer rejects non-TLS endpoints.
+The Agent access token is stored as plaintext in:
 
-### Credentials
+```text
+C:\ProgramData\MSM\agent\access-token
+```
 
-- The Agent authentication token is generated independently of VNC credentials.
-- The token is stored using Windows DPAPI machine protection and the data directory is ACL-restricted to LocalSystem and Administrators.
-- Existing legacy plaintext tokens are migrated to DPAPI storage on first startup.
+Sensitive identity/token files are restricted to `SYSTEM` and `BUILTIN\Administrators`. Session workers are permitted to publish non-secret monitor inventory metadata used by the Agent/Viewer.
+
+DPAPI-backed token storage remains deferred hardening work and is not part of the active token-storage path.
+
+## Credential separation
+
+- The Agent authentication token is independent from worker VNC credentials.
 - Each worker receives a random VNC password.
-- Viewer-to-VNC authorization uses a short-lived, session-bound VNC ticket rather than the long-lived Agent token.
-
-A local administrator or SYSTEM account is still a trusted principal. DPAPI machine scope and the directory ACL are defense-in-depth, not a protection boundary against SYSTEM compromise.
+- Viewer-to-VNC authorization uses a short-lived ticket bound to the requested session and monitor.
+- Authentication failures return `401 Unauthorized` without returning the expected credential.
+- Agent tokens, VNC passwords, and VNC tickets must never be written to logs.
 
 ## Worker lifecycle
 
-The Windows service owns one worker registry and reconciles it against interactive Windows sessions.
+The Windows service owns a worker registry keyed by `(session_id, monitor_index)` and reconciles it against interactive Windows sessions. It keeps a primary-display worker warm and starts additional monitor workers on demand.
 
-Worker failures use bounded retry backoff rather than an unbounded three-second spawn loop. Successful workers clear the failure state.
+Worker failures use bounded retry backoff rather than an unbounded spawn loop. Successful workers clear failure state. All workers for a session are removed when that session disappears.
 
-Workers must remain loopback-only. The installer installs a firewall block for TCP ports `5901-5999`; VNC traffic is expected to reach the worker only through the authenticated Agent proxy.
+Workers remain loopback-only. The installer also blocks inbound TCP `5901-5999`, so VNC traffic reaches workers only through the authenticated Agent proxy.
+
+## Monitor metadata
+
+Workers publish `monitors-<session>.json` containing monitor index, name, resolution, virtual-desktop position, and primary-display state. This metadata is not a credential. Keep sensitive token/identity ACLs separate from the permission required for session workers to refresh monitor metadata.
 
 ## Service recovery
 
 The installer configures Windows SCM recovery actions:
 
-1. first failure: restart after 5 seconds
-2. second failure: restart after 15 seconds
-3. third failure: restart after 60 seconds
-4. failure counter reset: 24 hours
-
-## TLS certificate requirements
-
-Use a certificate whose SAN covers the hostname used by the Viewer. For production deployments, use a certificate issued by the organization's trusted CA or a publicly trusted CA where appropriate.
-
-The private key must be readable by the LocalSystem service account and must not be distributed in source control.
-
-For a first installation:
-
-```powershell
-.\install-agent.ps1 `
-  -TlsCertificatePath C:\secure\msm-agent-cert.pem `
-  -TlsPrivateKeyPath C:\secure\msm-agent-key.pem
-```
-
-Subsequent upgrades preserve the installed TLS assets when certificate parameters are omitted.
+1. first failure: restart after 5 seconds;
+2. second failure: restart after 15 seconds;
+3. third failure: restart after 60 seconds;
+4. failure counter reset: 24 hours.
 
 ## Upgrade/uninstall behavior
 
-The installer:
+The installer stops active workers and the service, waits for SCM convergence, removes the previous service registration, replaces the Agent/worker binaries, preserves identity/token state, reapplies ACL/firewall/recovery configuration, reinstalls the service, starts it, and waits for `Running`.
 
-1. stops existing workers;
-2. stops the Windows service and waits for SCM state convergence;
-3. deletes the old service and waits for disappearance;
-4. replaces the binaries;
-5. preserves or replaces TLS assets;
-6. reapplies restrictive ACLs;
-7. reinstalls the service with TLS arguments;
-8. reapplies service recovery and firewall rules;
-9. starts the service and waits for `Running`.
+The installer is intended to be idempotent and does not rotate identity or the Agent access token during a normal reinstall/upgrade.
 
-## CI and dependency reproducibility
+## Observability
 
-The repository has production build/test gates for the frontend, workspace Rust code, Windows Agent release build, Tauri packaging, and Agent packaging. `Cargo.lock` is regenerated by a dedicated GitHub Actions workflow whenever the main branch changes and is committed before the release baseline is considered current.
+Release builds hide Agent and worker console windows. Structured `tracing` is present, but broad deployment should still route service/worker output to a retained sink or Windows Event Log. Never log credentials or tickets.
 
-The release candidate must use the exact commit that contains the synchronized `Cargo.lock`; do not ship a working tree with an uncommitted dependency resolution.
+## Automated gates
 
-## Logging
+GitHub Actions validates frontend dependency installation/build, Rust formatting/check/test/Clippy, Windows Agent release compilation, Tauri packaging, and Agent packaging. Unit coverage includes supervisor retry/backoff and worker-port allocation across monitors.
 
-Service-mode logging must be captured by the deployment environment before release. The current Agent uses structured `tracing` output; a production deployment should route service and worker output to a retained log sink or Windows Event Log before broad rollout.
+Windows-only lifecycle and multi-monitor behavior still require the physical validation matrix in `docs/release-validation.md`.
 
-## Release validation
+## Deferred security hardening
 
-Do not mark a release production-ready until the checklist in `docs/release-checklist.md` is complete and the Windows CI job has produced successful release binaries and installers.
+The following remain deferred while trusted-LAN `ws://` is the active product target:
+
+- native TLS/WSS for Agent transport;
+- DPAPI-backed Agent token storage;
+- token rotation/revocation;
+- certificate provisioning/rotation and SAN validation;
+- bounded rotating service logs;
+- Internet-facing authorization/network policy.
+
+These are blockers for an Internet-facing or otherwise untrusted-network deployment, but not for the current trusted-LAN milestone.
