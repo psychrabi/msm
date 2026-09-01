@@ -1,227 +1,27 @@
-﻿import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy,Suspense,useEffect,useRef,useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  register,
-  unregisterAll,
-} from "@tauri-apps/plugin-global-shortcut";
-import { isValidAgentIp } from "./lib/agent-protocol";
+import { register,unregisterAll } from "@tauri-apps/plugin-global-shortcut";
+import { connectionKey,isValidAgentIp,sessionMonitors } from "./lib/agent-protocol";
 import { hasSavedAgents } from "./lib/agent-storage";
 import { useAgentConnections } from "./hooks/useAgentConnections";
-import {
-  loadAboutPage,
-  loadMonitoringPage,
-  loadSettingsPage,
-} from "./lib/page-loaders";
-import { AppHeader, type Page } from "./components/AppHeader";
+import { loadAboutPage,loadMonitoringPage,loadSettingsPage } from "./lib/page-loaders";
+import { AppHeader,type Page } from "./components/AppHeader";
 import type { AgentSidebarActions } from "./components/AgentSidebar";
 import type { MonitoringActions } from "./components/MonitoringPage";
-import { connectionKey } from "./lib/agent-protocol";
 import "./styles.css";
-
-const AgentSidebar = lazy(async () => ({
-  default: (await import("./components/AgentSidebar")).AgentSidebar,
-}));
-const MonitoringPage = lazy(async () => ({
-  default: (await loadMonitoringPage()).MonitoringPage,
-}));
-const SettingsPage = lazy(async () => ({
-  default: (await loadSettingsPage()).SettingsPage,
-}));
-const AboutPage = lazy(async () => ({
-  default: (await loadAboutPage()).AboutPage,
-}));
-
-function PageFallback() {
-  return (
-    <div className="flex flex-1 items-center justify-center">
-      <p className="text-sm text-muted-foreground">Loading…</p>
-    </div>
-  );
-}
-
-export default function MultiAgentApp() {
-  const {
-    agents,
-    remoteConnections,
-    connectingSessions,
-    globalError,
-    setGlobalError,
-    addAgent,
-    connectAgent,
-    disconnectAgent: disconnectAgentConnection,
-    removeAgent,
-    startRemoteSession,
-    disconnectRemote: disconnectRemoteViewer,
-  } = useAgentConnections();
-  const [endpointInput, setEndpointInput] = useState("");
-  const [tokenInput, setTokenInput] = useState("");
-  const [activePage, setActivePage] = useState<Page>("monitoring");
-  const [fullscreenKey, setFullscreenKey] = useState<string | null>(null);
-  const [fullscreenViewOnly, setFullscreenViewOnly] = useState(true);
-
-  function openFullscreen(key: string) {
-    setFullscreenViewOnly(true);
-    setFullscreenKey(key);
-  }
-  function closeFullscreen() {
-    setFullscreenKey(null);
-    setFullscreenViewOnly(true);
-  }
-
-  // Drive real OS fullscreen from the viewer state so every exit path
-  // (button, disconnect, shortcut, remote close) restores the window.
-  const isAppFullscreen = fullscreenKey !== null;
-  useEffect(() => {
-    void getCurrentWindow()
-      .setFullscreen(isAppFullscreen)
-      .catch(() => undefined);
-  }, [isAppFullscreen]);
-
-  // Global shortcuts only while a viewer is fullscreen:
-  //   Ctrl+Shift+V  toggle view-only / control
-  //   Ctrl+Shift+F  exit fullscreen
-  // Escape is intentionally NOT bound: it must reach the remote session.
-  useEffect(() => {
-    if (!isAppFullscreen) return;
-    const exitFullscreen = () => {
-      setFullscreenKey(null);
-      setFullscreenViewOnly(true);
-    };
-    void register("CommandOrControl+Shift+V", (event) => {
-      if (event.state !== "Pressed") return;
-      setFullscreenViewOnly((viewOnly) => !viewOnly);
-    }).catch(() => undefined);
-    void register("CommandOrControl+Shift+F", (event) => {
-      if (event.state !== "Pressed") return;
-      exitFullscreen();
-    }).catch(() => undefined);
-    return () => {
-      void unregisterAll().catch(() => undefined);
-    };
-  }, [isAppFullscreen]);
-  async function handleDisconnectAgent(id: string) {
-    if (fullscreenKey?.startsWith(`${id}::`)) closeFullscreen();
-    await disconnectAgentConnection(id);
-  }
-  function handleDisconnectRemote(agentIdValue: string, sessionId: string) {
-    if (fullscreenKey === connectionKey(agentIdValue, sessionId))
-      closeFullscreen();
-    disconnectRemoteViewer(agentIdValue, sessionId);
-  }
-  async function handleAddAgent() {
-    const ip = endpointInput.trim();
-    const token = tokenInput.trim();
-    if (!isValidAgentIp(ip) || !token) {
-      setGlobalError("Enter a valid agent IP address and access token.");
-      return;
-    }
-    const created = await addAgent(ip, token);
-    if (created) {
-      setEndpointInput("");
-      setTokenInput("");
-      setActivePage("monitoring");
-    }
-  }
-
-  const connectedAgentCount = agents.filter(
-    (agent) => agent.status === "Connected",
-  ).length;
-  const totalSessions = agents.reduce(
-    (sum, agent) => sum + agent.sessions.length,
-    0,
-  );
-  const connectedByKey = new Map(
-    remoteConnections.map((remote) => [
-      connectionKey(remote.agentId, remote.sessionId),
-      remote,
-    ]),
-  );
-  const savedAgentsPresent = hasSavedAgents();
-
-  // Stable-identity action objects: the refs are mutated with fresh closures
-  // every render, so memoized children see an unchanged prop while still
-  // calling the latest handlers (no stale-closure risk).
-  const monitoringActionsRef = useRef<MonitoringActions>({
-    openFullscreen: () => undefined,
-    closeFullscreen: () => undefined,
-    setViewOnly: () => undefined,
-    disconnectRemote: () => undefined,
-    startSession: () => undefined,
-    viewerError: () => undefined,
-  });
-  monitoringActionsRef.current = {
-    openFullscreen,
-    closeFullscreen,
-    setViewOnly: setFullscreenViewOnly,
-    disconnectRemote: handleDisconnectRemote,
-    startSession: (agentIdValue, sessionId) =>
-      void startRemoteSession(agentIdValue, sessionId, true),
-    viewerError: setGlobalError,
-  };
-  const sidebarActionsRef = useRef<AgentSidebarActions>({
-    connect: () => undefined,
-    disconnect: () => undefined,
-    remove: () => undefined,
-    goToAddAgent: () => undefined,
-  });
-  sidebarActionsRef.current = {
-    connect: (id) => void connectAgent(id),
-    disconnect: (id) => void handleDisconnectAgent(id),
-    remove: (id) => void removeAgent(id),
-    goToAddAgent: () => setActivePage("settings"),
-  };
-
-  return (
-    <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <AppHeader
-        activePage={activePage}
-        onNavigate={setActivePage}
-        connectedAgentCount={connectedAgentCount}
-      />
-      {activePage === "monitoring" && (
-        <Suspense fallback={<PageFallback />}>
-          <div className="flex min-h-0 flex-1">
-            <AgentSidebar
-              agents={agents}
-              connectingSessions={connectingSessions}
-              connectedByKey={connectedByKey}
-              totalSessions={totalSessions}
-              actions={sidebarActionsRef.current}
-            />
-            <MonitoringPage
-              agents={agents}
-              connectingSessions={connectingSessions}
-              connectedByKey={connectedByKey}
-              totalSessions={totalSessions}
-              fullscreenKey={fullscreenKey}
-              fullscreenViewOnly={fullscreenViewOnly}
-              globalError={globalError}
-              actions={monitoringActionsRef.current}
-            />
-          </div>
-        </Suspense>
-      )}
-      {activePage === "settings" && (
-        <Suspense fallback={<PageFallback />}>
-          <SettingsPage
-            agents={agents}
-            endpointInput={endpointInput}
-            tokenInput={tokenInput}
-            savedAgentsPresent={savedAgentsPresent}
-            onEndpointInputChange={setEndpointInput}
-            onTokenInputChange={setTokenInput}
-            onAddAgent={() => void handleAddAgent()}
-            onConnectAgent={(id) => void connectAgent(id)}
-            onDisconnectAgent={(id) => void handleDisconnectAgent(id)}
-            onRemoveAgent={(id) => void removeAgent(id)}
-          />
-        </Suspense>
-      )}
-      {activePage === "about" && (
-        <Suspense fallback={<PageFallback />}>
-          <AboutPage />
-        </Suspense>
-      )}
-    </div>
-  );
+const AgentSidebar=lazy(async()=>({default:(await import("./components/AgentSidebar")).AgentSidebar}));const MonitoringPage=lazy(async()=>({default:(await loadMonitoringPage()).MonitoringPage}));const SettingsPage=lazy(async()=>({default:(await loadSettingsPage()).SettingsPage}));const AboutPage=lazy(async()=>({default:(await loadAboutPage()).AboutPage}));
+function PageFallback(){return <div className="flex flex-1 items-center justify-center"><p className="text-sm text-muted-foreground">Loading…</p></div>}
+export default function MultiAgentApp(){
+ const{agents,remoteConnections,connectingSessions,globalError,setGlobalError,addAgent,connectAgent,disconnectAgent:disconnectAgentConnection,removeAgent,startRemoteSession,disconnectRemote:disconnectRemoteViewer}=useAgentConnections();
+ const[endpointInput,setEndpointInput]=useState(""),[tokenInput,setTokenInput]=useState(""),[activePage,setActivePage]=useState<Page>("monitoring"),[fullscreenKey,setFullscreenKey]=useState<string|null>(null),[fullscreenViewOnly,setFullscreenViewOnly]=useState(true);
+ function openFullscreen(key:string){setFullscreenViewOnly(true);setFullscreenKey(key)}function closeFullscreen(){setFullscreenKey(null);setFullscreenViewOnly(true)}const isAppFullscreen=fullscreenKey!==null;
+ useEffect(()=>{void getCurrentWindow().setFullscreen(isAppFullscreen).catch(()=>undefined)},[isAppFullscreen]);
+ useEffect(()=>{if(!isAppFullscreen)return;const exit=()=>{setFullscreenKey(null);setFullscreenViewOnly(true)};void register("CommandOrControl+Shift+V",e=>{if(e.state==="Pressed")setFullscreenViewOnly(v=>!v)}).catch(()=>undefined);void register("CommandOrControl+Shift+F",e=>{if(e.state==="Pressed")exit()}).catch(()=>undefined);return()=>{void unregisterAll().catch(()=>undefined)}},[isAppFullscreen]);
+ async function handleDisconnectAgent(id:string){if(fullscreenKey?.startsWith(`${id}::`))closeFullscreen();await disconnectAgentConnection(id)}
+ function handleDisconnectRemote(agentIdValue:string,sessionId:string,monitorIndex:number){if(fullscreenKey===connectionKey(agentIdValue,sessionId,monitorIndex))closeFullscreen();disconnectRemoteViewer(agentIdValue,sessionId,monitorIndex)}
+ async function handleAddAgent(){const ip=endpointInput.trim(),token=tokenInput.trim();if(!isValidAgentIp(ip)||!token){setGlobalError("Enter a valid agent IP address and access token.");return}const created=await addAgent(ip,token);if(created){setEndpointInput("");setTokenInput("");setActivePage("monitoring")}}
+ const connectedAgentCount=agents.filter(a=>a.status==="Connected").length,totalSessions=agents.reduce((sum,a)=>sum+a.sessions.length,0),totalMonitors=agents.reduce((sum,a)=>sum+a.sessions.reduce((n,s)=>n+sessionMonitors(s).length,0),0);const connectedByKey=new Map(remoteConnections.map(r=>[connectionKey(r.agentId,r.sessionId,r.monitorIndex),r]));const savedAgentsPresent=hasSavedAgents();
+ const monitoringActionsRef=useRef<MonitoringActions>({openFullscreen:()=>undefined,closeFullscreen:()=>undefined,setViewOnly:()=>undefined,disconnectRemote:()=>undefined,startSession:()=>undefined,viewerError:()=>undefined});monitoringActionsRef.current={openFullscreen,closeFullscreen,setViewOnly:setFullscreenViewOnly,disconnectRemote:handleDisconnectRemote,startSession:(a,s,m)=>void startRemoteSession(a,s,m,true),viewerError:setGlobalError};
+ const sidebarActionsRef=useRef<AgentSidebarActions>({connect:()=>undefined,disconnect:()=>undefined,remove:()=>undefined,goToAddAgent:()=>undefined});sidebarActionsRef.current={connect:id=>void connectAgent(id),disconnect:id=>void handleDisconnectAgent(id),remove:id=>void removeAgent(id),goToAddAgent:()=>setActivePage("settings")};
+ return <div className="flex h-screen min-h-0 flex-col bg-background text-foreground"><AppHeader activePage={activePage} onNavigate={setActivePage} connectedAgentCount={connectedAgentCount}/>{activePage==="monitoring"&&<Suspense fallback={<PageFallback/>}><div className="flex min-h-0 flex-1"><AgentSidebar agents={agents} connectingSessions={connectingSessions} connectedByKey={connectedByKey} totalSessions={totalSessions} actions={sidebarActionsRef.current}/><MonitoringPage agents={agents} connectingSessions={connectingSessions} connectedByKey={connectedByKey} totalSessions={totalSessions} totalMonitors={totalMonitors} fullscreenKey={fullscreenKey} fullscreenViewOnly={fullscreenViewOnly} globalError={globalError} actions={monitoringActionsRef.current}/></div></Suspense>}{activePage==="settings"&&<Suspense fallback={<PageFallback/>}><SettingsPage agents={agents} endpointInput={endpointInput} tokenInput={tokenInput} savedAgentsPresent={savedAgentsPresent} onEndpointInputChange={setEndpointInput} onTokenInputChange={setTokenInput} onAddAgent={()=>void handleAddAgent()} onConnectAgent={id=>void connectAgent(id)} onDisconnectAgent={id=>void handleDisconnectAgent(id)} onRemoveAgent={id=>void removeAgent(id)}/></Suspense>}{activePage==="about"&&<Suspense fallback={<PageFallback/>}><AboutPage/></Suspense>}</div>
 }
