@@ -5,6 +5,7 @@ import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import {
   connectionKey,
+  sessionMonitors,
   type AgentConnection,
   type RemoteConnection,
 } from "../lib/agent-protocol";
@@ -22,21 +23,26 @@ const AgentSessionRow = memo(function AgentSessionRow({
   username,
   sessionId,
   active,
-  connected,
-  connecting,
+  connectedCount,
+  connectingCount,
+  monitorCount,
 }: {
   username: string;
   sessionId: string;
   active: boolean;
-  connected: boolean;
-  connecting: boolean;
+  connectedCount: number;
+  connectingCount: number;
+  monitorCount: number;
 }) {
+  const connected = connectedCount > 0;
+  const connecting = connectingCount > 0;
   return (
     <div className="mt-2 flex items-center justify-between rounded-md border px-2 py-1.5">
       <div className="min-w-0">
         <p className="truncate text-xs font-medium">{username}</p>
         <p className="text-[10px] text-muted-foreground">
-          Session {sessionId}
+          Session {sessionId} · {connectedCount}/{monitorCount} monitor
+          {monitorCount === 1 ? "" : "s"}
         </p>
       </div>
       <div className="flex items-center gap-1.5">
@@ -162,15 +168,23 @@ export function AgentSidebar({
               <p className="mt-2 text-xs text-destructive">{agent.error}</p>
             )}
             {agent.sessions.map((session) => {
-              const key = connectionKey(agent.id, session.sessionId);
+              const monitors = sessionMonitors(session);
+              let connectedCount = 0;
+              let connectingCount = 0;
+              for (const monitor of monitors) {
+                const key = connectionKey(agent.id, session.sessionId, monitor.index);
+                if (connectedByKey.has(key)) connectedCount += 1;
+                if (connectingSessions.has(key)) connectingCount += 1;
+              }
               return (
                 <AgentSessionRow
-                  key={key}
+                  key={`${agent.id}::${session.sessionId}`}
                   username={session.username}
                   sessionId={session.sessionId}
                   active={session.state === "active"}
-                  connected={connectedByKey.has(key)}
-                  connecting={connectingSessions.has(key)}
+                  connectedCount={connectedCount}
+                  connectingCount={connectingCount}
+                  monitorCount={monitors.length}
                 />
               );
             })}
