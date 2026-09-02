@@ -83,6 +83,10 @@ The installer blocks inbound access to TCP `5901-5999`, so the Agent proxy is th
 
 The Viewer owns Agent/session selection, monitor topology, noVNC rendering, connection state, credential retrieval, clipboard integration, and operator controls. Multiple monitor streams for one session are grouped into one viewer card while their VNC connections remain independent.
 
+The combined session viewer reproduces the Windows virtual-desktop arrangement from monitor `x`, `y`, `width`, and `height`, including left/right ordering, vertically stacked displays, negative coordinates, gaps, and differing resolutions. The complete layout is proportionally scaled to fit both the monitoring card and fullscreen view without reordering the displays.
+
+The sidebar aggregates monitor connection state per session, so a session with any connected or connecting monitor is represented correctly even when monitor 0 is not the only active stream.
+
 The normal viewer is view-only. Fullscreen provides an explicit view-only/control toggle.
 
 ## Service recovery
@@ -99,7 +103,6 @@ For LAN testing, bind explicitly to a trusted interface or `0.0.0.0:40123`.
 
 ## Current limitations and deferred hardening
 
-- combined Viewer currently groups monitors but exact physical/topology layout reproduction is still being refined;
 - monitor hotplug/resolution changes require broader soak testing;
 - fixed initial capture cadence;
 - basic keysym mapping;
