@@ -12,16 +12,15 @@ export function AboutPage() {
           <p className="text-muted-foreground">
             MSM Viewer is a desktop application for managing and observing
             remote workstations. It connects to lightweight MSM agents running
-            on machines in your network and shows you, at a glance, every
-            active user session across all of them — with live, view-only
-            screen streaming for any session you choose.
+            on machines in your network and shows you, at a glance, every active
+            user session across all of them — with live, view-only screen
+            streaming for any session you choose.
           </p>
           <p className="text-muted-foreground">
             Add an agent by entering its IP address and access token once. The
             agent is remembered, its credentials are stored securely in the
             operating system's credential store, and the viewer reconnects
-            automatically whenever an agent or session becomes available
-            again.
+            automatically whenever an agent or session becomes available again.
           </p>
           <ul className="space-y-3">
             <li className="flex gap-3">
@@ -29,9 +28,9 @@ export function AboutPage() {
               <span>
                 <span className="font-medium">Live remote viewers.</span>{" "}
                 <span className="text-muted-foreground">
-                  Each active login session appears as a 16:9 card streaming
-                  the remote screen. Open any viewer fullscreen and switch
-                  between view-only observation and interactive control.
+                  Each active login session appears as a 16:9 card streaming the
+                  remote screen. Open any viewer fullscreen and switch between
+                  view-only observation and interactive control.
                 </span>
               </span>
             </li>
@@ -40,9 +39,9 @@ export function AboutPage() {
               <span>
                 <span className="font-medium">Multi-agent monitoring.</span>{" "}
                 <span className="text-muted-foreground">
-                  Manage any number of agents side by side. Sessions are
-                  listed per machine, and viewers open automatically for
-                  sessions as they become active.
+                  Manage any number of agents side by side. Sessions are listed
+                  per machine, and viewers open automatically for sessions as
+                  they become active.
                 </span>
               </span>
             </li>
@@ -53,8 +52,7 @@ export function AboutPage() {
                 <span className="text-muted-foreground">
                   Every connection is authenticated with a per-agent bearer
                   token, screen data flows directly between you and the agent,
-                  and access tokens never persist in plain configuration
-                  files.
+                  and access tokens never persist in plain configuration files.
                 </span>
               </span>
             </li>

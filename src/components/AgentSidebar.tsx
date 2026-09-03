@@ -144,9 +144,7 @@ export function AgentSidebar({
                 }
                 onClick={() => actions.connect(agent.id)}
               >
-                {agent.status === "Reconnecting…"
-                  ? "Reconnecting…"
-                  : "Connect"}
+                {agent.status === "Reconnecting…" ? "Reconnecting…" : "Connect"}
               </Button>
               <Button
                 size="sm"
@@ -172,7 +170,11 @@ export function AgentSidebar({
               let connectedCount = 0;
               let connectingCount = 0;
               for (const monitor of monitors) {
-                const key = connectionKey(agent.id, session.sessionId, monitor.index);
+                const key = connectionKey(
+                  agent.id,
+                  session.sessionId,
+                  monitor.index,
+                );
                 if (connectedByKey.has(key)) connectedCount += 1;
                 if (connectingSessions.has(key)) connectingCount += 1;
               }
@@ -197,7 +199,11 @@ export function AgentSidebar({
         )}
       </div>
       <div className="border-t p-3">
-        <Button className="w-full" variant="outline" onClick={actions.goToAddAgent}>
+        <Button
+          className="w-full"
+          variant="outline"
+          onClick={actions.goToAddAgent}
+        >
           <Plus className="h-4 w-4" /> Add agent
         </Button>
       </div>

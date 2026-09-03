@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 // Tauri WebView clipboard access can be permission-sensitive. Route the
 // browser Clipboard API through the native Windows clipboard commands so the
@@ -10,13 +10,13 @@ if (nativeClipboard) {
   const originalReadText = nativeClipboard.readText.bind(nativeClipboard);
 
   try {
-    Object.defineProperty(navigator.clipboard, 'writeText', {
+    Object.defineProperty(navigator.clipboard, "writeText", {
       configurable: true,
-      value: (text: string) => invoke('clipboard_set', { text }),
+      value: (text: string) => invoke("clipboard_set", { text }),
     });
-    Object.defineProperty(navigator.clipboard, 'readText', {
+    Object.defineProperty(navigator.clipboard, "readText", {
       configurable: true,
-      value: () => invoke<string>('clipboard_get'),
+      value: () => invoke<string>("clipboard_get"),
     });
   } catch {
     // Fall back to the WebView implementation if the Clipboard API is not

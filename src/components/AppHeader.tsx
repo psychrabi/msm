@@ -1,4 +1,13 @@
-import { Activity, CircleHelp, Monitor, Moon, Settings2, Sun, Wifi, WifiOff } from "lucide-react";
+import {
+  Activity,
+  CircleHelp,
+  Monitor,
+  Moon,
+  Settings2,
+  Sun,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useTheme } from "./theme-provider";
@@ -69,7 +78,9 @@ export function AppHeader({
           variant="ghost"
           size="icon"
           aria-label={
-            resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+            resolvedTheme === "dark"
+              ? "Switch to light mode"
+              : "Switch to dark mode"
           }
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
         >

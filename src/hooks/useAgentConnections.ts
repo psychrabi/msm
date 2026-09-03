@@ -1,31 +1,486 @@
 import { useEffect, useRef, useState } from "react";
 import WebSocket from "@tauri-apps/plugin-websocket";
-import { agentId, connectionKey, isUnauthorizedError, isValidAgentIp, normalizeAgentIp, normalizeEndpoint, sessionMonitors, viewerId, type AgentConnection, type AgentMessage, type RemoteConnection } from "../lib/agent-protocol";
-import { addSavedAgent, clearLegacySavedConnection, deleteCredential, getCredential, getSavedAgents, LEGACY_ENDPOINT_KEY, LEGACY_TOKEN_KEY, removeSavedAgent, setCredential } from "../lib/agent-storage";
-const RECONNECT_DELAY_MS=3000,MAX_RECONNECT_DELAY_MS=60000,RECONNECT_JITTER=.15,HEALTH_CHECK_INTERVAL_MS=30000;
-type ViewerRuntime={manualDisconnected:boolean;pendingRequest:boolean};
-type AgentRuntime={socket:WebSocket|null;reconnectTimer:ReturnType<typeof setTimeout>|null;connecting:boolean;manualDisconnected:boolean;reconnectAttempts:number;viewers:Map<string,ViewerRuntime>};
-const newAgentRuntime=():AgentRuntime=>({socket:null,reconnectTimer:null,connecting:false,manualDisconnected:false,reconnectAttempts:0,viewers:new Map()});
-const newViewerRuntime=():ViewerRuntime=>({manualDisconnected:false,pendingRequest:false});
-export function useAgentConnections(){
- const[agents,setAgents]=useState<AgentConnection[]>([]);const[remoteConnections,setRemoteConnections]=useState<RemoteConnection[]>([]);const[connectingSessions,setConnectingSessions]=useState<Set<string>>(new Set());const[globalError,setGlobalError]=useState("");const runtimesRef=useRef(new Map<string,AgentRuntime>());const agentsRef=useRef<AgentConnection[]>([]);const initialLoadRef=useRef(false);
- function getRuntime(id:string){let r=runtimesRef.current.get(id);if(!r){r=newAgentRuntime();runtimesRef.current.set(id,r)}return r}
- function getViewer(runtime:AgentRuntime,sessionId:string,monitorIndex:number){const id=viewerId(sessionId,monitorIndex);let v=runtime.viewers.get(id);if(!v){v=newViewerRuntime();runtime.viewers.set(id,v)}return v}
- useEffect(()=>{agentsRef.current=agents},[agents]);
- useEffect(()=>{if(initialLoadRef.current)return;initialLoadRef.current=true;let cancelled=false;void(async()=>{let saved=getSavedAgents();const legacyEndpoint=localStorage.getItem(LEGACY_ENDPOINT_KEY),legacyToken=localStorage.getItem(LEGACY_TOKEN_KEY);if(legacyEndpoint&&saved.length===0)saved=[{endpoint:normalizeEndpoint(legacyEndpoint)}];const loaded=await Promise.all(saved.map(async(item):Promise<AgentConnection>=>{try{let token=await getCredential(item.endpoint);if(!token&&legacyToken&&legacyEndpoint&&normalizeEndpoint(legacyEndpoint)===item.endpoint){await setCredential(item.endpoint,legacyToken);token=legacyToken}return{id:agentId(item.endpoint),endpoint:item.endpoint,token:token??"",identity:null,sessions:[],status:"Disconnected",error:"",remembered:true}}catch(error){return{id:agentId(item.endpoint),endpoint:item.endpoint,token:"",identity:null,sessions:[],status:"Disconnected",error:String(error),remembered:true}}}));if(legacyEndpoint)clearLegacySavedConnection();if(cancelled)return;setAgents(loaded);for(const a of loaded)if(a.token)setTimeout(()=>void connectAgentRef.current(a.id,true),0)})();return()=>{cancelled=true}},[]);
- function updateAgent(id:string,patch:Partial<AgentConnection>){setAgents(c=>c.map(a=>a.id===id?{...a,...patch}:a))}
- function clearReconnectTimer(id:string){const r=getRuntime(id);if(r.reconnectTimer)clearTimeout(r.reconnectTimer);r.reconnectTimer=null}
- async function disconnectAgentSocket(id:string){const r=getRuntime(id),socket=r.socket;r.socket=null;if(socket)try{await socket.disconnect()}catch{}}
- function scheduleReconnect(id:string){const a=agentsRef.current.find(x=>x.id===id),r=getRuntime(id);if(!a||!a.remembered||!a.token||r.manualDisconnected||r.reconnectTimer)return;updateAgent(id,{status:"Reconnecting…"});const backoff=Math.min(RECONNECT_DELAY_MS*2**r.reconnectAttempts,MAX_RECONNECT_DELAY_MS);const delay=backoff*(1-RECONNECT_JITTER+Math.random()*RECONNECT_JITTER*2);r.reconnectAttempts++;r.reconnectTimer=setTimeout(()=>{r.reconnectTimer=null;void connectAgent(id,true)},delay)}
- async function refreshSessions(id:string){const socket=runtimesRef.current.get(id)?.socket;if(!socket)return;try{await socket.send(JSON.stringify({type:"listSessions"}))}catch{await disconnectAgentSocket(id);scheduleReconnect(id)}}
- async function connectAgent(id:string,isReconnect=false){const agent=agentsRef.current.find(x=>x.id===id),runtime=getRuntime(id);if(!agent||runtime.connecting||runtime.socket||!agent.token)return;runtime.connecting=true;runtime.manualDisconnected=false;updateAgent(id,{status:isReconnect?"Reconnecting…":"Connecting…",error:""});try{const connection=await WebSocket.connect(agent.endpoint,{headers:{Authorization:`Bearer ${agent.token.trim()}`}});runtime.socket=connection;runtime.reconnectAttempts=0;clearReconnectTimer(id);updateAgent(id,{status:"Connected",error:""});addSavedAgent(agent.endpoint);await setCredential(agent.endpoint,agent.token.trim());connection.addListener(message=>{if(message.type!=="Text")return;try{const payload=JSON.parse(message.data) as AgentMessage;if(payload.type==="hello"){updateAgent(id,{identity:payload.identity,status:"Connected",error:""});void refreshSessions(id);return}if(payload.type==="sessions"){updateAgent(id,{sessions:payload.sessions});for(const session of payload.sessions){if(session.state!=="active")continue;for(const monitor of sessionMonitors(session))void startRemoteSession(id,session.sessionId,monitor.index)}return}if(payload.type==="remoteSession"){const mi=payload.session.monitorIndex??0,key=connectionKey(id,payload.session.sessionId,mi),viewer=runtime.viewers.get(viewerId(payload.session.sessionId,mi));if(!viewer?.pendingRequest)return;viewer.pendingRequest=false;setConnectingSessions(c=>{const n=new Set(c);n.delete(key);return n});const agentNow=agentsRef.current.find(x=>x.id===id),session=agentNow?.sessions.find(x=>x.sessionId===payload.session.sessionId),monitor=sessionMonitors(session??{sessionId:payload.session.sessionId,username:"",state:"active"}).find(m=>m.index===mi);setRemoteConnections(c=>c.some(x=>x.agentId===id&&x.sessionId===payload.session.sessionId&&x.monitorIndex===mi)?c:[...c,{...payload.session,monitorIndex:mi,agentId:id,username:session?.username??`Session ${payload.session.sessionId}`,monitorName:monitor?.name??`Monitor ${mi+1}`}]);return}if(payload.type==="error")setGlobalError(`${agentsRef.current.find(x=>x.id===id)?.identity?.deviceName??id}: ${payload.message}`)}catch{updateAgent(id,{error:"Received an invalid message from the agent."})}});void refreshSessions(id)}catch(error){if(isUnauthorizedError(error)){await deleteCredential(agent.endpoint).catch(()=>undefined);removeSavedAgent(agent.endpoint);updateAgent(id,{status:"Disconnected",token:"",remembered:false,error:"Authentication failed (401)."})}else{updateAgent(id,{status:"Disconnected",error:error instanceof Error?error.message:String(error)});scheduleReconnect(id)}}finally{runtime.connecting=false}}
- const connectAgentRef=useRef(connectAgent);useEffect(()=>{connectAgentRef.current=connectAgent});
- async function addAgent(endpointIp:string,token:string){const ip=endpointIp.trim(),normalized=normalizeAgentIp(ip),trimmedToken=token.trim();if(!isValidAgentIp(ip)||!normalized||!trimmedToken)return false;const existing=agentsRef.current.find(a=>a.id===agentId(normalized));if(existing){updateAgent(existing.id,{token:trimmedToken,remembered:true,error:""});addSavedAgent(normalized);await setCredential(normalized,trimmedToken);setTimeout(()=>void connectAgentRef.current(existing.id),0);return false}const next:AgentConnection={id:agentId(normalized),endpoint:normalized,token:trimmedToken,identity:null,sessions:[],status:"Disconnected",error:"",remembered:true};setAgents(c=>[...c,next]);addSavedAgent(normalized);await setCredential(normalized,trimmedToken);setTimeout(()=>void connectAgentRef.current(next.id),0);return true}
- async function disconnectAgent(id:string){const r=getRuntime(id);r.manualDisconnected=true;clearReconnectTimer(id);for(const v of r.viewers.values())v.pendingRequest=false;setConnectingSessions(c=>{const n=new Set(c);for(const key of n)if(key.startsWith(`${id}::`))n.delete(key);return n});setRemoteConnections(c=>c.filter(x=>x.agentId!==id));await disconnectAgentSocket(id);updateAgent(id,{status:"Disconnected",identity:null,sessions:[]})}
- async function removeAgent(id:string){const a=agentsRef.current.find(x=>x.id===id);if(!a)return;await disconnectAgent(id);await deleteCredential(a.endpoint).catch(()=>undefined);removeSavedAgent(a.endpoint);runtimesRef.current.delete(id);setAgents(c=>c.filter(x=>x.id!==id))}
- async function startRemoteSession(agentIdValue:string,sessionId:string,monitorIndex=0,userInitiated=false){const runtime=getRuntime(agentIdValue),viewer=getViewer(runtime,sessionId,monitorIndex),key=connectionKey(agentIdValue,sessionId,monitorIndex);if(userInitiated)viewer.manualDisconnected=false;if(viewer.manualDisconnected||!runtime.socket||viewer.pendingRequest||remoteConnections.some(x=>x.agentId===agentIdValue&&x.sessionId===sessionId&&x.monitorIndex===monitorIndex))return;viewer.pendingRequest=true;setConnectingSessions(c=>new Set(c).add(key));try{await runtime.socket.send(JSON.stringify({type:"startSession",sessionId,monitorIndex}))}catch{viewer.pendingRequest=false;setConnectingSessions(c=>{const n=new Set(c);n.delete(key);return n});await disconnectAgentSocket(agentIdValue);scheduleReconnect(agentIdValue)}}
- function disconnectRemote(agentIdValue:string,sessionId:string,monitorIndex=0){const key=connectionKey(agentIdValue,sessionId,monitorIndex),runtime=runtimesRef.current.get(agentIdValue);if(runtime){const v=getViewer(runtime,sessionId,monitorIndex);v.manualDisconnected=true;v.pendingRequest=false}setConnectingSessions(c=>{const n=new Set(c);n.delete(key);return n});setRemoteConnections(c=>c.filter(x=>!(x.agentId===agentIdValue&&x.sessionId===sessionId&&x.monitorIndex===monitorIndex)))}
- useEffect(()=>{const refresh=()=>{for(const a of agentsRef.current)if(runtimesRef.current.get(a.id)?.socket)void refreshSessions(a.id)};const interval=setInterval(()=>{if(document.visibilityState==="visible")refresh()},HEALTH_CHECK_INTERVAL_MS);const visible=()=>{if(document.visibilityState==="visible")refresh()};document.addEventListener("visibilitychange",visible);return()=>{clearInterval(interval);document.removeEventListener("visibilitychange",visible)}},[]);
- useEffect(()=>()=>{for(const r of runtimesRef.current.values()){if(r.reconnectTimer)clearTimeout(r.reconnectTimer);if(r.socket)void r.socket.disconnect().catch(()=>undefined)}},[]);
- return{agents,remoteConnections,connectingSessions,globalError,setGlobalError,addAgent,connectAgent,disconnectAgent,removeAgent,startRemoteSession,disconnectRemote};
+import {
+  agentId,
+  connectionKey,
+  isUnauthorizedError,
+  isValidAgentIp,
+  normalizeAgentIp,
+  normalizeEndpoint,
+  sessionMonitors,
+  viewerId,
+  type AgentConnection,
+  type AgentMessage,
+  type RemoteConnection,
+} from "../lib/agent-protocol";
+import {
+  addSavedAgent,
+  clearLegacySavedConnection,
+  deleteCredential,
+  getCredential,
+  getSavedAgents,
+  LEGACY_ENDPOINT_KEY,
+  LEGACY_TOKEN_KEY,
+  removeSavedAgent,
+  setCredential,
+} from "../lib/agent-storage";
+const RECONNECT_DELAY_MS = 3000,
+  MAX_RECONNECT_DELAY_MS = 60000,
+  RECONNECT_JITTER = 0.15,
+  HEALTH_CHECK_INTERVAL_MS = 30000;
+type ViewerRuntime = { manualDisconnected: boolean; pendingRequest: boolean };
+type AgentRuntime = {
+  socket: WebSocket | null;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  connecting: boolean;
+  manualDisconnected: boolean;
+  reconnectAttempts: number;
+  viewers: Map<string, ViewerRuntime>;
+};
+const newAgentRuntime = (): AgentRuntime => ({
+  socket: null,
+  reconnectTimer: null,
+  connecting: false,
+  manualDisconnected: false,
+  reconnectAttempts: 0,
+  viewers: new Map(),
+});
+const newViewerRuntime = (): ViewerRuntime => ({
+  manualDisconnected: false,
+  pendingRequest: false,
+});
+export function useAgentConnections() {
+  const [agents, setAgents] = useState<AgentConnection[]>([]);
+  const [remoteConnections, setRemoteConnections] = useState<
+    RemoteConnection[]
+  >([]);
+  const [connectingSessions, setConnectingSessions] = useState<Set<string>>(
+    new Set(),
+  );
+  const [globalError, setGlobalError] = useState("");
+  const runtimesRef = useRef(new Map<string, AgentRuntime>());
+  const agentsRef = useRef<AgentConnection[]>([]);
+  const initialLoadRef = useRef(false);
+  function getRuntime(id: string) {
+    let r = runtimesRef.current.get(id);
+    if (!r) {
+      r = newAgentRuntime();
+      runtimesRef.current.set(id, r);
+    }
+    return r;
+  }
+  function getViewer(
+    runtime: AgentRuntime,
+    sessionId: string,
+    monitorIndex: number,
+  ) {
+    const id = viewerId(sessionId, monitorIndex);
+    let v = runtime.viewers.get(id);
+    if (!v) {
+      v = newViewerRuntime();
+      runtime.viewers.set(id, v);
+    }
+    return v;
+  }
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+  useEffect(() => {
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      let saved = getSavedAgents();
+      const legacyEndpoint = localStorage.getItem(LEGACY_ENDPOINT_KEY),
+        legacyToken = localStorage.getItem(LEGACY_TOKEN_KEY);
+      if (legacyEndpoint && saved.length === 0)
+        saved = [{ endpoint: normalizeEndpoint(legacyEndpoint) }];
+      const loaded = await Promise.all(
+        saved.map(async (item): Promise<AgentConnection> => {
+          try {
+            let token = await getCredential(item.endpoint);
+            if (
+              !token &&
+              legacyToken &&
+              legacyEndpoint &&
+              normalizeEndpoint(legacyEndpoint) === item.endpoint
+            ) {
+              await setCredential(item.endpoint, legacyToken);
+              token = legacyToken;
+            }
+            return {
+              id: agentId(item.endpoint),
+              endpoint: item.endpoint,
+              token: token ?? "",
+              identity: null,
+              sessions: [],
+              status: "Disconnected",
+              error: "",
+              remembered: true,
+            };
+          } catch (error) {
+            return {
+              id: agentId(item.endpoint),
+              endpoint: item.endpoint,
+              token: "",
+              identity: null,
+              sessions: [],
+              status: "Disconnected",
+              error: String(error),
+              remembered: true,
+            };
+          }
+        }),
+      );
+      if (legacyEndpoint) clearLegacySavedConnection();
+      if (cancelled) return;
+      setAgents(loaded);
+      for (const a of loaded)
+        if (a.token)
+          setTimeout(() => void connectAgentRef.current(a.id, true), 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  function updateAgent(id: string, patch: Partial<AgentConnection>) {
+    setAgents((c) => c.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  }
+  function clearReconnectTimer(id: string) {
+    const r = getRuntime(id);
+    if (r.reconnectTimer) clearTimeout(r.reconnectTimer);
+    r.reconnectTimer = null;
+  }
+  async function disconnectAgentSocket(id: string) {
+    const r = getRuntime(id),
+      socket = r.socket;
+    r.socket = null;
+    if (socket)
+      try {
+        await socket.disconnect();
+      } catch {}
+  }
+  function scheduleReconnect(id: string) {
+    const a = agentsRef.current.find((x) => x.id === id),
+      r = getRuntime(id);
+    if (
+      !a ||
+      !a.remembered ||
+      !a.token ||
+      r.manualDisconnected ||
+      r.reconnectTimer
+    )
+      return;
+    updateAgent(id, { status: "Reconnecting…" });
+    const backoff = Math.min(
+      RECONNECT_DELAY_MS * 2 ** r.reconnectAttempts,
+      MAX_RECONNECT_DELAY_MS,
+    );
+    const delay =
+      backoff * (1 - RECONNECT_JITTER + Math.random() * RECONNECT_JITTER * 2);
+    r.reconnectAttempts++;
+    r.reconnectTimer = setTimeout(() => {
+      r.reconnectTimer = null;
+      void connectAgent(id, true);
+    }, delay);
+  }
+  async function refreshSessions(id: string) {
+    const socket = runtimesRef.current.get(id)?.socket;
+    if (!socket) return;
+    try {
+      await socket.send(JSON.stringify({ type: "listSessions" }));
+    } catch {
+      await disconnectAgentSocket(id);
+      scheduleReconnect(id);
+    }
+  }
+  async function connectAgent(id: string, isReconnect = false) {
+    const agent = agentsRef.current.find((x) => x.id === id),
+      runtime = getRuntime(id);
+    if (!agent || runtime.connecting || runtime.socket || !agent.token) return;
+    runtime.connecting = true;
+    runtime.manualDisconnected = false;
+    updateAgent(id, {
+      status: isReconnect ? "Reconnecting…" : "Connecting…",
+      error: "",
+    });
+    try {
+      const connection = await WebSocket.connect(agent.endpoint, {
+        headers: { Authorization: `Bearer ${agent.token.trim()}` },
+      });
+      runtime.socket = connection;
+      runtime.reconnectAttempts = 0;
+      clearReconnectTimer(id);
+      updateAgent(id, { status: "Connected", error: "" });
+      addSavedAgent(agent.endpoint);
+      await setCredential(agent.endpoint, agent.token.trim());
+      connection.addListener((message) => {
+        if (message.type !== "Text") return;
+        try {
+          const payload = JSON.parse(message.data) as AgentMessage;
+          if (payload.type === "hello") {
+            updateAgent(id, {
+              identity: payload.identity,
+              status: "Connected",
+              error: "",
+            });
+            void refreshSessions(id);
+            return;
+          }
+          if (payload.type === "sessions") {
+            updateAgent(id, { sessions: payload.sessions });
+            for (const session of payload.sessions) {
+              if (session.state !== "active") continue;
+              for (const monitor of sessionMonitors(session))
+                void startRemoteSession(id, session.sessionId, monitor.index);
+            }
+            return;
+          }
+          if (payload.type === "remoteSession") {
+            const mi = payload.session.monitorIndex ?? 0,
+              key = connectionKey(id, payload.session.sessionId, mi),
+              viewer = runtime.viewers.get(
+                viewerId(payload.session.sessionId, mi),
+              );
+            if (!viewer?.pendingRequest) return;
+            viewer.pendingRequest = false;
+            setConnectingSessions((c) => {
+              const n = new Set(c);
+              n.delete(key);
+              return n;
+            });
+            const agentNow = agentsRef.current.find((x) => x.id === id),
+              session = agentNow?.sessions.find(
+                (x) => x.sessionId === payload.session.sessionId,
+              ),
+              monitor = sessionMonitors(
+                session ?? {
+                  sessionId: payload.session.sessionId,
+                  username: "",
+                  state: "active",
+                },
+              ).find((m) => m.index === mi);
+            setRemoteConnections((c) =>
+              c.some(
+                (x) =>
+                  x.agentId === id &&
+                  x.sessionId === payload.session.sessionId &&
+                  x.monitorIndex === mi,
+              )
+                ? c
+                : [
+                    ...c,
+                    {
+                      ...payload.session,
+                      monitorIndex: mi,
+                      agentId: id,
+                      username:
+                        session?.username ??
+                        `Session ${payload.session.sessionId}`,
+                      monitorName: monitor?.name ?? `Monitor ${mi + 1}`,
+                    },
+                  ],
+            );
+            return;
+          }
+          if (payload.type === "error")
+            setGlobalError(
+              `${agentsRef.current.find((x) => x.id === id)?.identity?.deviceName ?? id}: ${payload.message}`,
+            );
+        } catch {
+          updateAgent(id, {
+            error: "Received an invalid message from the agent.",
+          });
+        }
+      });
+      void refreshSessions(id);
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await deleteCredential(agent.endpoint).catch(() => undefined);
+        removeSavedAgent(agent.endpoint);
+        updateAgent(id, {
+          status: "Disconnected",
+          token: "",
+          remembered: false,
+          error: "Authentication failed (401).",
+        });
+      } else {
+        updateAgent(id, {
+          status: "Disconnected",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        scheduleReconnect(id);
+      }
+    } finally {
+      runtime.connecting = false;
+    }
+  }
+  const connectAgentRef = useRef(connectAgent);
+  useEffect(() => {
+    connectAgentRef.current = connectAgent;
+  });
+  async function addAgent(endpointIp: string, token: string) {
+    const ip = endpointIp.trim(),
+      normalized = normalizeAgentIp(ip),
+      trimmedToken = token.trim();
+    if (!isValidAgentIp(ip) || !normalized || !trimmedToken) return false;
+    const existing = agentsRef.current.find(
+      (a) => a.id === agentId(normalized),
+    );
+    if (existing) {
+      updateAgent(existing.id, {
+        token: trimmedToken,
+        remembered: true,
+        error: "",
+      });
+      addSavedAgent(normalized);
+      await setCredential(normalized, trimmedToken);
+      setTimeout(() => void connectAgentRef.current(existing.id), 0);
+      return false;
+    }
+    const next: AgentConnection = {
+      id: agentId(normalized),
+      endpoint: normalized,
+      token: trimmedToken,
+      identity: null,
+      sessions: [],
+      status: "Disconnected",
+      error: "",
+      remembered: true,
+    };
+    setAgents((c) => [...c, next]);
+    addSavedAgent(normalized);
+    await setCredential(normalized, trimmedToken);
+    setTimeout(() => void connectAgentRef.current(next.id), 0);
+    return true;
+  }
+  async function disconnectAgent(id: string) {
+    const r = getRuntime(id);
+    r.manualDisconnected = true;
+    clearReconnectTimer(id);
+    for (const v of r.viewers.values()) v.pendingRequest = false;
+    setConnectingSessions((c) => {
+      const n = new Set(c);
+      for (const key of n) if (key.startsWith(`${id}::`)) n.delete(key);
+      return n;
+    });
+    setRemoteConnections((c) => c.filter((x) => x.agentId !== id));
+    await disconnectAgentSocket(id);
+    updateAgent(id, { status: "Disconnected", identity: null, sessions: [] });
+  }
+  async function removeAgent(id: string) {
+    const a = agentsRef.current.find((x) => x.id === id);
+    if (!a) return;
+    await disconnectAgent(id);
+    await deleteCredential(a.endpoint).catch(() => undefined);
+    removeSavedAgent(a.endpoint);
+    runtimesRef.current.delete(id);
+    setAgents((c) => c.filter((x) => x.id !== id));
+  }
+  async function startRemoteSession(
+    agentIdValue: string,
+    sessionId: string,
+    monitorIndex = 0,
+    userInitiated = false,
+  ) {
+    const runtime = getRuntime(agentIdValue),
+      viewer = getViewer(runtime, sessionId, monitorIndex),
+      key = connectionKey(agentIdValue, sessionId, monitorIndex);
+    if (userInitiated) viewer.manualDisconnected = false;
+    if (
+      viewer.manualDisconnected ||
+      !runtime.socket ||
+      viewer.pendingRequest ||
+      remoteConnections.some(
+        (x) =>
+          x.agentId === agentIdValue &&
+          x.sessionId === sessionId &&
+          x.monitorIndex === monitorIndex,
+      )
+    )
+      return;
+    viewer.pendingRequest = true;
+    setConnectingSessions((c) => new Set(c).add(key));
+    try {
+      await runtime.socket.send(
+        JSON.stringify({ type: "startSession", sessionId, monitorIndex }),
+      );
+    } catch {
+      viewer.pendingRequest = false;
+      setConnectingSessions((c) => {
+        const n = new Set(c);
+        n.delete(key);
+        return n;
+      });
+      await disconnectAgentSocket(agentIdValue);
+      scheduleReconnect(agentIdValue);
+    }
+  }
+  function disconnectRemote(
+    agentIdValue: string,
+    sessionId: string,
+    monitorIndex = 0,
+  ) {
+    const key = connectionKey(agentIdValue, sessionId, monitorIndex),
+      runtime = runtimesRef.current.get(agentIdValue);
+    if (runtime) {
+      const v = getViewer(runtime, sessionId, monitorIndex);
+      v.manualDisconnected = true;
+      v.pendingRequest = false;
+    }
+    setConnectingSessions((c) => {
+      const n = new Set(c);
+      n.delete(key);
+      return n;
+    });
+    setRemoteConnections((c) =>
+      c.filter(
+        (x) =>
+          !(
+            x.agentId === agentIdValue &&
+            x.sessionId === sessionId &&
+            x.monitorIndex === monitorIndex
+          ),
+      ),
+    );
+  }
+  useEffect(() => {
+    const refresh = () => {
+      for (const a of agentsRef.current)
+        if (runtimesRef.current.get(a.id)?.socket) void refreshSessions(a.id);
+    };
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, HEALTH_CHECK_INTERVAL_MS);
+    const visible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, []);
+  useEffect(
+    () => () => {
+      for (const r of runtimesRef.current.values()) {
+        if (r.reconnectTimer) clearTimeout(r.reconnectTimer);
+        if (r.socket) void r.socket.disconnect().catch(() => undefined);
+      }
+    },
+    [],
+  );
+  return {
+    agents,
+    remoteConnections,
+    connectingSessions,
+    globalError,
+    setGlobalError,
+    addAgent,
+    connectAgent,
+    disconnectAgent,
+    removeAgent,
+    startRemoteSession,
+    disconnectRemote,
+  };
 }

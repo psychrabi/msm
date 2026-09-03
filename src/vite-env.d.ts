@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-declare module '@novnc/novnc' {
+declare module "@novnc/novnc" {
   export interface RFBOptions {
     credentials?: {
       username?: string;

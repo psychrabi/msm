@@ -1,40 +1,36 @@
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 pub const FIRST_VNC_PORT: u16 = 5901;
 pub const MAX_VNC_PORT: u16 = 5999;
 
 use axum::{
-    Json, Router,
-    extract::{
-        Path, Query, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
-    },
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    Json,
+    Router,
+    extract::{ Path, Query, State, ws::{ Message, WebSocket, WebSocketUpgrade } },
+    http::{ HeaderMap, StatusCode, header::AUTHORIZATION },
     response::IntoResponse,
-    routing::{any, get},
+    routing::{ any, get },
 };
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use futures_util::{ SinkExt, StreamExt };
+use serde::{ Deserialize, Serialize };
 use std::{
     collections::HashMap,
-    env, fs,
+    env,
+    fs,
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
-    time::{Duration as StdDuration, Instant},
+    time::{ Duration as StdDuration, Instant },
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{ AsyncReadExt, AsyncWriteExt },
     net::TcpStream,
     signal,
-    sync::{Mutex, oneshot},
+    sync::{ Mutex, oneshot },
     time::Duration,
 };
-use tracing::{info, warn};
+use tracing::{ info, warn };
 
 mod session_supervisor;
 
@@ -135,10 +131,18 @@ struct AppState {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerMessage {
-    Hello { identity: DeviceIdentity },
-    Sessions { sessions: Vec<SessionInfo> },
-    RemoteSession { session: RemoteSession },
-    Error { message: String },
+    Hello {
+        identity: DeviceIdentity,
+    },
+    Sessions {
+        sessions: Vec<SessionInfo>,
+    },
+    RemoteSession {
+        session: RemoteSession,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,21 +238,15 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
 
 async fn health(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     if !authorized(&headers, &state.auth_token) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error":"unauthorized"})),
-        );
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":"unauthorized"})));
     }
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status":"ok","device":state.identity})),
-    )
+    (StatusCode::OK, Json(serde_json::json!({"status":"ok","device":state.identity})))
 }
 
 async fn websocket(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    headers: HeaderMap,
+    headers: HeaderMap
 ) -> impl IntoResponse {
     if !authorized(&headers, &state.auth_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -257,37 +255,35 @@ async fn websocket(
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    let _ = send_message(
-        &mut socket,
-        ServerMessage::Hello {
-            identity: state.identity.clone(),
-        },
-    )
-    .await;
+    let _ = send_message(&mut socket, ServerMessage::Hello {
+        identity: state.identity.clone(),
+    }).await;
 
     while let Some(Ok(message)) = socket.recv().await {
         let Message::Text(text) = message else {
             continue;
         };
         let response = match serde_json::from_str::<ClientMessage>(&text) {
-            Ok(ClientMessage::ListSessions) => ServerMessage::Sessions {
-                sessions: discover_windows_sessions().await,
-            },
-            Ok(ClientMessage::StartSession {
-                session_id,
-                monitor_index,
-            }) => match start_session(&state, &session_id, monitor_index).await {
-                Ok(session) => ServerMessage::RemoteSession { session },
-                Err(error) => ServerMessage::Error {
-                    message: error.to_string(),
+            Ok(ClientMessage::ListSessions) =>
+                ServerMessage::Sessions {
+                    sessions: discover_windows_sessions().await,
                 },
-            },
-            Ok(ClientMessage::Ping) => ServerMessage::Hello {
-                identity: state.identity.clone(),
-            },
-            Err(error) => ServerMessage::Error {
-                message: format!("invalid request: {error}"),
-            },
+            Ok(ClientMessage::StartSession { session_id, monitor_index }) =>
+                match start_session(&state, &session_id, monitor_index).await {
+                    Ok(session) => ServerMessage::RemoteSession { session },
+                    Err(error) =>
+                        ServerMessage::Error {
+                            message: error.to_string(),
+                        },
+                }
+            Ok(ClientMessage::Ping) =>
+                ServerMessage::Hello {
+                    identity: state.identity.clone(),
+                },
+            Err(error) =>
+                ServerMessage::Error {
+                    message: format!("invalid request: {error}"),
+                },
         };
         if send_message(&mut socket, response).await.is_err() {
             break;
@@ -297,17 +293,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
 async fn send_message(socket: &mut WebSocket, message: ServerMessage) -> Result<(), ()> {
     let payload = serde_json::to_string(&message).map_err(|_| ())?;
-    socket
-        .send(Message::Text(payload.into()))
-        .await
-        .map_err(|_| ())
+    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
 }
 
 async fn vnc_websocket(
     Path((session_id, monitor_index)): Path<(u32, u32)>,
     Query(query): Query<VncTicketQuery>,
     State(state): State<AppState>,
-    ws: WebSocketUpgrade,
+    ws: WebSocketUpgrade
 ) -> impl IntoResponse {
     let key = WorkerKey {
         session_id,
@@ -346,7 +339,9 @@ async fn proxy_vnc(websocket: WebSocket, port: u16) {
                         break;
                     }
                 }
-                Message::Close(_) => break,
+                Message::Close(_) => {
+                    break;
+                }
                 _ => {}
             }
         }
@@ -356,14 +351,12 @@ async fn proxy_vnc(websocket: WebSocket, port: u16) {
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
             let count = match tcp_read.read(&mut buffer).await {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    break;
+                }
                 Ok(count) => count,
             };
-            if ws_write
-                .send(Message::Binary(buffer[..count].to_vec().into()))
-                .await
-                .is_err()
-            {
+            if ws_write.send(Message::Binary(buffer[..count].to_vec().into())).await.is_err() {
                 break;
             }
         }
@@ -383,29 +376,24 @@ fn read_monitors(session_id: u32) -> Vec<MonitorInfo> {
 }
 
 async fn discover_windows_sessions() -> Vec<SessionInfo> {
-    tokio::task::spawn_blocking(|| windows_sessions().unwrap_or_default())
-        .await
-        .unwrap_or_default()
+    tokio::task::spawn_blocking(|| windows_sessions().unwrap_or_default()).await.unwrap_or_default()
 }
 
 #[cfg(windows)]
 fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Send + Sync>> {
     use windows::Win32::System::RemoteDesktop::{
-        WTS_CURRENT_SERVER_HANDLE, WTSEnumerateSessionsW, WTSFreeMemory,
-        WTSQuerySessionInformationW, WTSUserName,
+        WTS_CURRENT_SERVER_HANDLE,
+        WTSEnumerateSessionsW,
+        WTSFreeMemory,
+        WTSQuerySessionInformationW,
+        WTSUserName,
     };
     use windows::core::PWSTR;
 
     unsafe {
         let mut pointer = std::ptr::null_mut();
         let mut count = 0u32;
-        WTSEnumerateSessionsW(
-            Some(WTS_CURRENT_SERVER_HANDLE),
-            0,
-            1,
-            &mut pointer,
-            &mut count,
-        )?;
+        WTSEnumerateSessionsW(Some(WTS_CURRENT_SERVER_HANDLE), 0, 1, &mut pointer, &mut count)?;
         if pointer.is_null() {
             return Ok(Vec::new());
         }
@@ -418,21 +406,21 @@ fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Se
             }
             let mut username_pointer = PWSTR(std::ptr::null_mut());
             let mut bytes = 0u32;
-            if WTSQuerySessionInformationW(
-                Some(WTS_CURRENT_SERVER_HANDLE),
-                session.SessionId,
-                WTSUserName,
-                &mut username_pointer,
-                &mut bytes,
-            )
-            .is_err()
-                || username_pointer.is_null()
+            if
+                WTSQuerySessionInformationW(
+                    Some(WTS_CURRENT_SERVER_HANDLE),
+                    session.SessionId,
+                    WTSUserName,
+                    &mut username_pointer,
+                    &mut bytes
+                ).is_err() ||
+                username_pointer.is_null()
             {
                 continue;
             }
             let chars = std::slice::from_raw_parts(
                 username_pointer.as_ptr(),
-                ((bytes as usize) / 2).saturating_sub(1),
+                ((bytes as usize) / 2).saturating_sub(1)
             );
             let username = String::from_utf16_lossy(chars);
             WTSFreeMemory(username_pointer.as_ptr() as _);
@@ -461,15 +449,11 @@ fn windows_sessions() -> Result<Vec<SessionInfo>, Box<dyn std::error::Error + Se
 async fn start_session(
     state: &AppState,
     session_id: &str,
-    monitor_index: u32,
+    monitor_index: u32
 ) -> Result<RemoteSession, Box<dyn std::error::Error + Send + Sync>> {
     let id: u32 = session_id.parse()?;
     let monitors = read_monitors(id);
-    if !monitors.is_empty()
-        && !monitors
-            .iter()
-            .any(|monitor| monitor.index == monitor_index)
-    {
+    if !monitors.is_empty() && !monitors.iter().any(|monitor| monitor.index == monitor_index) {
         return Err(format!("monitor {monitor_index} is unavailable for session {id}").into());
     }
     let mut session = session_supervisor::ensure_session_monitor(state, id, monitor_index).await?;
@@ -478,11 +462,7 @@ async fn start_session(
         session_id: id,
         monitor_index,
     };
-    state
-        .vnc_tickets
-        .lock()
-        .await
-        .insert(ticket.clone(), (key, Instant::now() + VNC_TICKET_TTL));
+    state.vnc_tickets.lock().await.insert(ticket.clone(), (key, Instant::now() + VNC_TICKET_TTL));
     session.vnc_ticket = ticket;
     Ok(session)
 }
@@ -492,22 +472,26 @@ fn spawn_worker(
     session_id: u32,
     port: u16,
     password: &str,
-    monitor_index: Option<u32>,
+    monitor_index: Option<u32>
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+    use std::{ ffi::OsStr, os::windows::ffi::OsStrExt };
     use windows::{
         Win32::Foundation::CloseHandle,
         Win32::System::RemoteDesktop::WTSQueryUserToken,
         Win32::System::Threading::{
-            CreateProcessAsUserW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+            CreateProcessAsUserW,
+            PROCESS_CREATION_FLAGS,
+            PROCESS_INFORMATION,
+            STARTUPINFOW,
         },
         core::PWSTR,
     };
 
     unsafe {
         let mut token = Default::default();
-        WTSQueryUserToken(session_id, &mut token)
-            .map_err(|error| format!("WTSQueryUserToken(session {session_id}) failed: {error}"))?;
+        WTSQueryUserToken(session_id, &mut token).map_err(|error|
+            format!("WTSQueryUserToken(session {session_id}) failed: {error}")
+        )?;
         let exe = env::current_exe()?.with_file_name("msm-agent-worker.exe");
         let monitor_arg = monitor_index
             .map(|index| format!(" --monitor-index {index}"))
@@ -518,7 +502,7 @@ fn spawn_worker(
             session_id,
             port,
             password,
-            monitor_arg,
+            monitor_arg
         );
         let mut command_w: Vec<u16> = OsStr::new(&command).encode_wide().chain(Some(0)).collect();
         let desktop: Vec<u16> = OsStr::new("winsta0\\default")
@@ -540,9 +524,8 @@ fn spawn_worker(
             None,
             None,
             &startup,
-            &mut process,
-        )
-        .map_err(|error| format!("CreateProcessAsUserW(session {session_id}) failed: {error}"))?;
+            &mut process
+        ).map_err(|error| format!("CreateProcessAsUserW(session {session_id}) failed: {error}"))?;
         let pid = process.dwProcessId;
         CloseHandle(process.hThread)?;
         CloseHandle(process.hProcess)?;
@@ -556,7 +539,7 @@ fn spawn_worker(
     _: u32,
     _: u16,
     _: &str,
-    _: Option<u32>,
+    _: Option<u32>
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
     Err("Windows only".into())
 }
@@ -565,7 +548,7 @@ fn spawn_worker(
 fn terminate_worker(pid: u32) {
     use windows::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess},
+        System::Threading::{ OpenProcess, PROCESS_TERMINATE, TerminateProcess },
     };
 
     unsafe {
@@ -607,7 +590,7 @@ async fn build_app() -> Result<(Router, DeviceIdentity), Box<dyn std::error::Err
 async fn run_server(
     listen: SocketAddr,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    ready: Option<oneshot::Sender<Result<(), String>>>,
+    ready: Option<oneshot::Sender<Result<(), String>>>
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (app, identity) = build_app().await?;
     let listener = match tokio::net::TcpListener::bind(listen).await {
@@ -623,23 +606,21 @@ async fn run_server(
         let _ = sender.send(Ok(()));
     }
     info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%listen,"MSM Windows agent started without TLS");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
     Ok(())
 }
 
 #[cfg(windows)]
 fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::{ffi::OsString, path::PathBuf};
+    use std::{ ffi::OsString, path::PathBuf };
     use windows_service::{
-        service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType},
-        service_manager::{ServiceManager, ServiceManagerAccess},
+        service::{ ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType },
+        service_manager::{ ServiceManager, ServiceManagerAccess },
     };
 
     let manager = ServiceManager::local_computer(
         None::<&str>,
-        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE
     )?;
     let executable_path = env::current_exe()?;
     let info = ServiceInfo {
@@ -654,12 +635,13 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
         account_name: None,
         account_password: None,
     };
-    let access = ServiceAccess::QUERY_STATUS
-        | ServiceAccess::QUERY_CONFIG
-        | ServiceAccess::CHANGE_CONFIG
-        | ServiceAccess::START
-        | ServiceAccess::STOP
-        | ServiceAccess::DELETE;
+    let access =
+        ServiceAccess::QUERY_STATUS |
+        ServiceAccess::QUERY_CONFIG |
+        ServiceAccess::CHANGE_CONFIG |
+        ServiceAccess::START |
+        ServiceAccess::STOP |
+        ServiceAccess::DELETE;
     if let Ok(existing) = manager.open_service(SERVICE_NAME, access) {
         let _ = existing.stop();
         let _ = existing.delete();
@@ -674,16 +656,20 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
 #[cfg(windows)]
 fn uninstall_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use windows_service::{
-        service::{ServiceAccess, ServiceState},
-        service_manager::{ServiceManager, ServiceManagerAccess},
+        service::{ ServiceAccess, ServiceState },
+        service_manager::{ ServiceManager, ServiceManagerAccess },
     };
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = match manager.open_service(
-        SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
-    ) {
+    let service = match
+        manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE
+        )
+    {
         Ok(service) => service,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            return Ok(());
+        }
     };
     if service.query_status()?.current_state != ServiceState::Stopped {
         let _ = service.stop();
@@ -696,14 +682,11 @@ fn uninstall_windows_service() -> Result<(), Box<dyn std::error::Error + Send + 
 fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use windows_service::{
         service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
+        service_manager::{ ServiceManager, ServiceManagerAccess },
     };
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     manager
-        .open_service(
-            SERVICE_NAME,
-            ServiceAccess::START | ServiceAccess::QUERY_STATUS,
-        )?
+        .open_service(SERVICE_NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)?
         .start::<&str>(&[])?;
     Ok(())
 }
@@ -712,28 +695,29 @@ fn start_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync
 fn stop_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use windows_service::{
         service::ServiceAccess,
-        service_manager::{ServiceManager, ServiceManagerAccess},
+        service_manager::{ ServiceManager, ServiceManagerAccess },
     };
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let _ = manager
-        .open_service(
-            SERVICE_NAME,
-            ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
-        )?
+        .open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::QUERY_STATUS)?
         .stop()?;
     Ok(())
 }
 
 #[cfg(windows)]
 fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::{ffi::OsString, sync::mpsc};
+    use std::{ ffi::OsString, sync::mpsc };
     use windows_service::{
         define_windows_service,
         service::{
-            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+            ServiceControl,
+            ServiceControlAccept,
+            ServiceExitCode,
+            ServiceState,
+            ServiceStatus,
             ServiceType,
         },
-        service_control_handler::{self, ServiceControlHandlerResult},
+        service_control_handler::{ self, ServiceControlHandlerResult },
         service_dispatcher,
     };
 
@@ -741,18 +725,23 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
 
     fn service_main(_: Vec<OsString>) {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
-        let status_handle =
-            match service_control_handler::register(SERVICE_NAME, move |event| match event {
-                ServiceControl::Stop | ServiceControl::Shutdown => {
-                    let _ = stop_tx.send(());
-                    ServiceControlHandlerResult::NoError
+        let status_handle = match
+            service_control_handler::register(SERVICE_NAME, move |event| {
+                match event {
+                    ServiceControl::Stop | ServiceControl::Shutdown => {
+                        let _ = stop_tx.send(());
+                        ServiceControlHandlerResult::NoError
+                    }
+                    ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                    _ => ServiceControlHandlerResult::NotImplemented,
                 }
-                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                _ => ServiceControlHandlerResult::NotImplemented,
-            }) {
-                Ok(handle) => handle,
-                Err(_) => return,
-            };
+            })
+        {
+            Ok(handle) => handle,
+            Err(_) => {
+                return;
+            }
+        };
 
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
@@ -764,12 +753,11 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
             process_id: None,
         });
 
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
+        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
             Ok(runtime) => runtime,
-            Err(_) => return,
+            Err(_) => {
+                return;
+            }
         };
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
         let (stop_tx_async, stop_rx_async) = oneshot::channel::<()>();
@@ -777,15 +765,15 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
             let _ = stop_rx.recv();
             let _ = stop_tx_async.send(());
         });
-        let server = runtime.spawn(run_server(
-            SERVICE_LISTEN
-                .parse()
-                .expect("valid service listen address"),
-            async move {
-                let _ = stop_rx_async.await;
-            },
-            Some(ready_tx),
-        ));
+        let server = runtime.spawn(
+            run_server(
+                SERVICE_LISTEN.parse().expect("valid service listen address"),
+                async move {
+                    let _ = stop_rx_async.await;
+                },
+                Some(ready_tx)
+            )
+        );
 
         match ready_rx.blocking_recv() {
             Ok(Ok(())) => {
@@ -878,14 +866,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return run_as_windows_service();
     }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(run_server(
-        args.listen,
-        async {
-            let _ = signal::ctrl_c().await;
-        },
-        None,
-    ))
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(
+        run_server(
+            args.listen,
+            async {
+                let _ = signal::ctrl_c().await;
+            },
+            None
+        )
+    )
 }

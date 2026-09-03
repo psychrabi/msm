@@ -1,8 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  normalizeEndpoint,
-  type SavedAgent,
-} from "./agent-protocol";
+import { normalizeEndpoint, type SavedAgent } from "./agent-protocol";
 
 const SAVED_AGENTS_KEY = "msm.saved-agents";
 const LEGACY_ENDPOINT_KEY = "msm.saved-agent-connection";

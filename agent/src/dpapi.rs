@@ -1,9 +1,9 @@
-use std::{fs, path::Path};
+use std::{ fs, path::Path };
 
 const PREFIX: &str = "MSM-DPAPI-1:";
 
 pub fn load_or_create_secret(
-    path: &Path,
+    path: &Path
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     if let Ok(contents) = fs::read_to_string(path) {
         let contents = contents.trim();
@@ -34,7 +34,7 @@ pub fn load_or_create_secret(
 
 fn write_secret(
     path: &Path,
-    protected: &[u8],
+    protected: &[u8]
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -45,9 +45,12 @@ fn write_secret(
 
 #[cfg(windows)]
 fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{ HLOCAL, LocalFree };
     use windows::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+        CRYPT_INTEGER_BLOB,
+        CRYPTPROTECT_LOCAL_MACHINE,
+        CRYPTPROTECT_UI_FORBIDDEN,
+        CryptProtectData,
     };
     use windows::core::PCWSTR;
 
@@ -64,7 +67,7 @@ fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Erro
             None,
             None,
             CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &mut output
         )?;
         let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
@@ -74,11 +77,13 @@ fn protect_machine(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Erro
 
 #[cfg(windows)]
 fn unprotect_machine(
-    protected: &[u8],
+    protected: &[u8]
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{ HLOCAL, LocalFree };
     use windows::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
+        CRYPT_INTEGER_BLOB,
+        CRYPTPROTECT_LOCAL_MACHINE,
+        CRYPTPROTECT_UI_FORBIDDEN,
         CryptUnprotectData,
     };
     let input = CRYPT_INTEGER_BLOB {
@@ -94,7 +99,7 @@ fn unprotect_machine(
             None,
             None,
             CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &mut output
         )?;
         let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
@@ -123,12 +128,8 @@ fn hex_decode(value: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send +
     }
     let mut out = Vec::with_capacity(value.len() / 2);
     for chunk in value.as_bytes().chunks_exact(2) {
-        let hi = (chunk[0] as char)
-            .to_digit(16)
-            .ok_or("invalid DPAPI token encoding")?;
-        let lo = (chunk[1] as char)
-            .to_digit(16)
-            .ok_or("invalid DPAPI token encoding")?;
+        let hi = (chunk[0] as char).to_digit(16).ok_or("invalid DPAPI token encoding")?;
+        let lo = (chunk[1] as char).to_digit(16).ok_or("invalid DPAPI token encoding")?;
         out.push(((hi << 4) | lo) as u8);
     }
     Ok(out)

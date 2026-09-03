@@ -56,7 +56,9 @@ export function SettingsPage({
                   autoComplete="off"
                   placeholder="192.168.1.10"
                   value={endpointInput}
-                  onChange={(event) => onEndpointInputChange(event.target.value)}
+                  onChange={(event) =>
+                    onEndpointInputChange(event.target.value)
+                  }
                 />
               </div>
               <div className="space-y-2">
@@ -102,9 +104,7 @@ export function SettingsPage({
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={
-                          agent.status === "Connected" || !agent.token
-                        }
+                        disabled={agent.status === "Connected" || !agent.token}
                         onClick={() => onConnectAgent(agent.id)}
                       >
                         Connect

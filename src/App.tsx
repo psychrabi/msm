@@ -1,3 +1,3 @@
-import MultiAgentApp from './MultiAgentApp';
+import MultiAgentApp from "./MultiAgentApp";
 
 export default MultiAgentApp;
