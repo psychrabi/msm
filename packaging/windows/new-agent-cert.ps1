@@ -61,7 +61,10 @@ $cert = Join-Path $OutDir "cert.pem"
 
 $openssl = Find-OpenSsl
 & $openssl req -x509 -newkey rsa:2048 -keyout $key -out $cert -days $Days -nodes `
-    -subj "/CN=$($DnsNames[0])" -addext "subjectAltName=$san"
+    -subj "/CN=$($DnsNames[0])" -addext "subjectAltName=$san" `
+    -addext "basicConstraints=critical,CA:FALSE" `
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment" `
+    -addext "extendedKeyUsage=serverAuth"
 if ($LASTEXITCODE -ne 0) { throw "openssl failed with exit code $LASTEXITCODE." }
 
 Write-Host ""
