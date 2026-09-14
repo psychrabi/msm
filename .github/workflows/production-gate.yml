@@ -42,14 +42,14 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build frontend
+        run: bun run build
+
       - name: Cargo check
         run: cargo check --workspace --target x86_64-pc-windows-msvc
 
       - name: Cargo test
         run: cargo test --workspace --target x86_64-pc-windows-msvc
-
-      - name: Build frontend
-        run: bun run build
 
       - name: Build Windows Agent
         run: cargo build --release -p msm-agent --target x86_64-pc-windows-msvc
