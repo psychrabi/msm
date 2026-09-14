@@ -176,7 +176,7 @@ $ServiceConfig = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $ServiceConfig) { throw "$ServiceName service was not created." }
 if ($ServiceConfig.StartName -ne "LocalSystem") { throw "$ServiceName was created with unexpected account '$($ServiceConfig.StartName)'. Expected LocalSystem." }
 if ($ServiceConfig.PathName -notmatch '--run-service') { throw "$ServiceName has unexpected service command line: $($ServiceConfig.PathName)" }
-if ($ServiceConfig.PathName -match '--tls-cert|--tls-key') { throw "$ServiceName unexpectedly contains TLS arguments." }
+if ($ServiceConfig.PathName -notmatch '--tls-cert' -or $ServiceConfig.PathName -notmatch '--tls-key') { throw "$ServiceName is not configured with TLS certificate and key arguments." }
 
 & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 & sc.exe failureflag $ServiceName 1 | Out-Null

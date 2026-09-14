@@ -18,7 +18,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-os = "2"
 tauri-plugin-process = "2"
-tauri-plugin-websocket = "2"
+tauri-plugin-websocket = { version = "2", default-features = false, features = ["rustls-tls-native-roots"] }
 tauri-plugin-global-shortcut = "2"
 keyring = { version = "3", features = ["windows-native"] }
 arboard = "3.6.1"

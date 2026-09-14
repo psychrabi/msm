@@ -46,12 +46,20 @@ const SERVICE_DISPLAY_NAME: &str = "MSM Agent";
 const SERVICE_DESCRIPTION: &str = "MSM multiseat remote monitor and control agent";
 #[cfg(windows)]
 const SERVICE_LISTEN: &str = "0.0.0.0:40123";
+#[cfg(windows)]
+const SERVICE_TLS_CERT: &str = r"C:\ProgramData\MSM\agent\tls\cert.pem";
+#[cfg(windows)]
+const SERVICE_TLS_KEY: &str = r"C:\ProgramData\MSM\agent\tls\key.pem";
 
 #[derive(Debug, Parser, Clone)]
 #[command(name = "msm-agent", version, about = "MSM Windows machine agent")]
 struct Args {
     #[arg(long, default_value = DEFAULT_LISTEN)]
     listen: SocketAddr,
+    #[arg(long)]
+    tls_cert: Option<PathBuf>,
+    #[arg(long)]
+    tls_key: Option<PathBuf>,
     #[arg(long)]
     print_identity: bool,
     #[arg(long, hide = true)]
@@ -589,25 +597,52 @@ async fn build_app() -> Result<(Router, DeviceIdentity), Box<dyn std::error::Err
 
 async fn run_server(
     listen: SocketAddr,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ready: Option<oneshot::Sender<Result<(), String>>>
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (app, identity) = build_app().await?;
-    let listener = match tokio::net::TcpListener::bind(listen).await {
-        Ok(listener) => listener,
-        Err(error) => {
+    match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => {
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                .await
+                .map_err(|e| format!("TLS configuration failed: {e}"))?;
+            let listener = std::net::TcpListener::bind(listen)?;
+            listener.set_nonblocking(true)?;
             if let Some(sender) = ready {
-                let _ = sender.send(Err(error.to_string()));
+                let _ = sender.send(Ok(()));
             }
-            return Err(error.into());
+            info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%listen,"MSM Windows agent started with TLS");
+            let handle = axum_server::Handle::new();
+            let server = axum_server::from_tcp_rustls(listener, config)?
+                .handle(handle.clone())
+                .serve(app.into_make_service());
+            tokio::select! {
+                result = server => result?,
+                _ = shutdown => { handle.graceful_shutdown(Some(Duration::from_secs(30))); }
+            }
+            Ok(())
         }
-    };
-    if let Some(sender) = ready {
-        let _ = sender.send(Ok(()));
+        (None, None) => {
+            let listener = match tokio::net::TcpListener::bind(listen).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    if let Some(sender) = ready {
+                        let _ = sender.send(Err(error.to_string()));
+                    }
+                    return Err(error.into());
+                }
+            };
+            if let Some(sender) = ready {
+                let _ = sender.send(Ok(()));
+            }
+            info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%listen,"MSM Windows agent started without TLS (development mode)");
+            axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
+            Ok(())
+        }
+        _ => Err("TLS requires both --tls-cert and --tls-key".into()),
     }
-    info!(device_id=%identity.device_id,device_name=%identity.device_name,listen=%listen,"MSM Windows agent started without TLS");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -618,6 +653,14 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
         service_manager::{ ServiceManager, ServiceManagerAccess },
     };
 
+    if !PathBuf::from(SERVICE_TLS_CERT).is_file() ||
+        !PathBuf::from(SERVICE_TLS_KEY).is_file() {
+        return Err(
+            format!(
+                "TLS certificate and key must exist at {SERVICE_TLS_CERT} and {SERVICE_TLS_KEY} before installing the service"
+            ).into()
+        );
+    }
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE
@@ -630,7 +673,13 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path: PathBuf::from(executable_path),
-        launch_arguments: vec![OsString::from("--run-service")],
+        launch_arguments: vec![
+            OsString::from("--run-service"),
+            OsString::from("--tls-cert"),
+            OsString::from(SERVICE_TLS_CERT),
+            OsString::from("--tls-key"),
+            OsString::from(SERVICE_TLS_KEY),
+        ],
         dependencies: vec![],
         account_name: None,
         account_password: None,
@@ -650,6 +699,7 @@ fn install_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Sy
     }
     let service = manager.create_service(&info, access)?;
     service.set_description(SERVICE_DESCRIPTION)?;
+    println!("MSM Agent service installed with TLS.");
     Ok(())
 }
 
@@ -768,6 +818,8 @@ fn run_as_windows_service() -> Result<(), Box<dyn std::error::Error + Send + Syn
         let server = runtime.spawn(
             run_server(
                 SERVICE_LISTEN.parse().expect("valid service listen address"),
+                Some(PathBuf::from(SERVICE_TLS_CERT)),
+                Some(PathBuf::from(SERVICE_TLS_KEY)),
                 async move {
                     let _ = stop_rx_async.await;
                 },
@@ -865,11 +917,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if args.run_service {
         return run_as_windows_service();
     }
-
+    if args.tls_cert.is_some() != args.tls_key.is_some() {
+        return Err("--tls-cert and --tls-key must be provided together".into());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(
         run_server(
             args.listen,
+            args.tls_cert,
+            args.tls_key,
             async {
                 let _ = signal::ctrl_c().await;
             },

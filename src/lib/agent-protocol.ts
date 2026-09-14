@@ -57,16 +57,19 @@ export type RemoteConnection = RemoteSession & {
 };
 export const DEFAULT_AGENT_PORT = 40123;
 
-/** Normalize Agent endpoints to plain WebSocket transport for the school LAN demo. */
+/** Normalize agent endpoints to a WebSocket URL, preserving the TLS scheme. */
 export function normalizeEndpoint(endpoint: string): string {
   const value = endpoint.trim();
   if (!value) return "";
-  const insecure = value
-    .replace(/^https:/i, "ws:")
-    .replace(/^http:/i, "ws:")
-    .replace(/^wss:/i, "ws:");
-  const normalized = insecure.replace(/\/$/, "");
-  return normalized.endsWith("/ws") ? normalized : `${normalized}/ws`;
+  if (/^https?:\/\//i.test(value)) {
+    const ws = value.replace(/^http/i, "ws").replace(/\/$/, "");
+    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
+  }
+  if (/^wss?:\/\//i.test(value)) {
+    const ws = value.replace(/\/$/, "");
+    return ws.endsWith("/ws") ? ws : `${ws}/ws`;
+  }
+  return `ws://${value.replace(/\/$/, "")}/ws`;
 }
 export function normalizeAgentIp(address: string): string {
   const value = address.trim();
