@@ -1,13 +1,13 @@
 import { Monitor } from "lucide-react";
 import {
-  connectionKey,
+  remotesByMonitor,
   sessionMonitors,
+  sessionViewerKey,
   type AgentConnection,
   type RemoteConnection,
 } from "../lib/agent-protocol";
 import {
   SessionViewerCard,
-  sessionViewerKey,
   type MonitoringActions,
 } from "./SessionViewerCard";
 
@@ -72,13 +72,12 @@ export function MonitoringPage({
             <div className="viewer-grid">
               {sessionRows.map(({ agent, session, monitors }) => {
                 const key = sessionViewerKey(agent.id, session.sessionId);
-                const remotes = new Map<number, RemoteConnection>();
-                for (const monitor of monitors) {
-                  const remote = connectedByKey.get(
-                    connectionKey(agent.id, session.sessionId, monitor.index),
-                  );
-                  if (remote) remotes.set(monitor.index, remote);
-                }
+                const remotes = remotesByMonitor(
+                  connectedByKey,
+                  agent.id,
+                  session.sessionId,
+                  monitors,
+                );
                 return (
                   <SessionViewerCard
                     key={key}

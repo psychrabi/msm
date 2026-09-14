@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type RFB from "@novnc/novnc";
-import {
-  normalizeEndpoint,
-  type RemoteConnection,
-} from "../lib/agent-protocol";
+import { buildVncUrl, type RemoteConnection } from "../lib/agent-protocol";
 type RfbClipboardApi = RFB & {
   clipboardPasteFrom(text: string): void;
   addEventListener(
@@ -47,9 +44,12 @@ export function RemoteViewer({
     disposingRef.current = false;
     let disposed = false,
       rfb: RFB | null = null;
-    const controlEndpoint = new URL(normalizeEndpoint(endpoint));
-    controlEndpoint.pathname = `/vnc/${remote.sessionId}/${remote.monitorIndex}`;
-    controlEndpoint.search = `ticket=${encodeURIComponent(remote.vncTicket)}`;
+    const controlUrl = buildVncUrl(
+      endpoint,
+      remote.sessionId,
+      remote.monitorIndex,
+      remote.vncTicket,
+    );
     container.replaceChildren();
     setLoadingModule(true);
     const handlePaste = (event: ClipboardEvent) => {
@@ -76,7 +76,7 @@ export function RemoteViewer({
       try {
         const { default: RFBClass } = await import("@novnc/novnc");
         if (disposed) return;
-        rfb = new RFBClass(container, controlEndpoint.toString(), {
+        rfb = new RFBClass(container, controlUrl, {
           credentials: { password: remote.vncPassword },
         });
         const clipboardRfb = rfb as RfbClipboardApi;

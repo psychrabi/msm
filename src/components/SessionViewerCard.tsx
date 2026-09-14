@@ -15,6 +15,7 @@ import { RemoteViewer } from "./RemoteViewer";
 import { cn } from "../lib/utils";
 import {
   connectionKey,
+  sessionViewerKey,
   type AgentConnection,
   type MonitorInfo,
   type RemoteConnection,
@@ -45,10 +46,6 @@ export type MonitoringActions = {
   ) => void;
   viewerError: (message: string) => void;
 };
-
-export function sessionViewerKey(agentId: string, sessionId: string) {
-  return `${agentId}::${sessionId}::session`;
-}
 
 function monitorWeight(monitor: MonitorInfo) {
   if (monitor.width > 0 && monitor.height > 0)

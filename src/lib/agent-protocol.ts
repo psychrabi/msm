@@ -138,6 +138,23 @@ export function connectionKey(
 export function viewerId(session: string, monitorIndex = 0) {
   return `${session}::${monitorIndex}`;
 }
+export function sessionViewerKey(agentId: string, sessionId: string) {
+  return `${agentId}::${sessionId}::session`;
+}
+export function isAgentKey(key: string, agentId: string) {
+  return key.startsWith(`${agentId}::`);
+}
+export function buildVncUrl(
+  endpoint: string,
+  sessionId: string,
+  monitorIndex: number,
+  ticket: string,
+): string {
+  const url = new URL(normalizeEndpoint(endpoint));
+  url.pathname = `/vnc/${sessionId}/${monitorIndex}`;
+  url.search = `ticket=${encodeURIComponent(ticket)}`;
+  return url.toString();
+}
 export function sessionMonitors(session: Session): MonitorInfo[] {
   return session.monitors?.length
     ? session.monitors
@@ -152,6 +169,21 @@ export function sessionMonitors(session: Session): MonitorInfo[] {
           isPrimary: true,
         },
       ];
+}
+export function remotesByMonitor(
+  connectedByKey: Map<string, RemoteConnection>,
+  agentId: string,
+  sessionId: string,
+  monitors: MonitorInfo[],
+): Map<number, RemoteConnection> {
+  const remotes = new Map<number, RemoteConnection>();
+  for (const monitor of monitors) {
+    const remote = connectedByKey.get(
+      connectionKey(agentId, sessionId, monitor.index),
+    );
+    if (remote) remotes.set(monitor.index, remote);
+  }
+  return remotes;
 }
 export function upsertRemoteConnection(
   current: RemoteConnection[],

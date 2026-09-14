@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
 import {
   connectionKey,
+  isAgentKey,
   isValidAgentIp,
   sessionMonitors,
 } from "./lib/agent-protocol";
@@ -86,7 +87,7 @@ export default function MultiAgentApp() {
     };
   }, [isAppFullscreen]);
   async function handleDisconnectAgent(id: string) {
-    if (fullscreenKey?.startsWith(`${id}::`)) closeFullscreen();
+    if (fullscreenKey && isAgentKey(fullscreenKey, id)) closeFullscreen();
     await disconnectAgentConnection(id);
   }
   function handleDisconnectRemote(

@@ -30,7 +30,7 @@ use tokio::{
     sync::{ Mutex, oneshot },
     time::Duration,
 };
-use tracing::{ info, warn };
+use tracing::info;
 
 mod session_supervisor;
 
@@ -474,106 +474,6 @@ async fn start_session(
     session.vnc_ticket = ticket;
     Ok(session)
 }
-
-#[cfg(windows)]
-fn spawn_worker(
-    session_id: u32,
-    port: u16,
-    password: &str,
-    monitor_index: Option<u32>
-) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
-    use std::{ ffi::OsStr, os::windows::ffi::OsStrExt };
-    use windows::{
-        Win32::Foundation::CloseHandle,
-        Win32::System::RemoteDesktop::WTSQueryUserToken,
-        Win32::System::Threading::{
-            CreateProcessAsUserW,
-            PROCESS_CREATION_FLAGS,
-            PROCESS_INFORMATION,
-            STARTUPINFOW,
-        },
-        core::PWSTR,
-    };
-
-    unsafe {
-        let mut token = Default::default();
-        WTSQueryUserToken(session_id, &mut token).map_err(|error|
-            format!("WTSQueryUserToken(session {session_id}) failed: {error}")
-        )?;
-        let exe = env::current_exe()?.with_file_name("msm-agent-worker.exe");
-        let monitor_arg = monitor_index
-            .map(|index| format!(" --monitor-index {index}"))
-            .unwrap_or_default();
-        let command = format!(
-            "\"{}\" --session-id {} --port {} --password {}{}",
-            exe.display(),
-            session_id,
-            port,
-            password,
-            monitor_arg
-        );
-        let mut command_w: Vec<u16> = OsStr::new(&command).encode_wide().chain(Some(0)).collect();
-        let desktop: Vec<u16> = OsStr::new("winsta0\\default")
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let mut startup = STARTUPINFOW::default();
-        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        startup.lpDesktop = PWSTR(desktop.as_ptr() as *mut u16);
-        let mut process = PROCESS_INFORMATION::default();
-        CreateProcessAsUserW(
-            Some(token),
-            None,
-            Some(PWSTR(command_w.as_mut_ptr())),
-            None,
-            None,
-            false,
-            PROCESS_CREATION_FLAGS(0),
-            None,
-            None,
-            &startup,
-            &mut process
-        ).map_err(|error| format!("CreateProcessAsUserW(session {session_id}) failed: {error}"))?;
-        let pid = process.dwProcessId;
-        CloseHandle(process.hThread)?;
-        CloseHandle(process.hProcess)?;
-        CloseHandle(token)?;
-        Ok(pid)
-    }
-}
-
-#[cfg(not(windows))]
-fn spawn_worker(
-    _: u32,
-    _: u16,
-    _: &str,
-    _: Option<u32>
-) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
-    Err("Windows only".into())
-}
-
-#[cfg(windows)]
-fn terminate_worker(pid: u32) {
-    use windows::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{ OpenProcess, PROCESS_TERMINATE, TerminateProcess },
-    };
-
-    unsafe {
-        match OpenProcess(PROCESS_TERMINATE, false, pid) {
-            Ok(process) => {
-                if let Err(error) = TerminateProcess(process, 1) {
-                    warn!(pid, %error, "failed to terminate VNC worker");
-                }
-                let _ = CloseHandle(process);
-            }
-            Err(error) => warn!(pid, %error, "failed to open VNC worker for termination"),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn terminate_worker(_: u32) {}
 
 async fn build_app() -> Result<(Router, DeviceIdentity), Box<dyn std::error::Error + Send + Sync>> {
     let identity = load_or_create_identity()?;

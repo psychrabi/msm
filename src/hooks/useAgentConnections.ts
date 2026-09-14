@@ -3,6 +3,7 @@ import WebSocket from "@tauri-apps/plugin-websocket";
 import {
   agentId,
   connectionKey,
+  isAgentKey,
   isUnauthorizedError,
   isValidAgentIp,
   normalizeAgentIp,
@@ -25,31 +26,13 @@ import {
   removeSavedAgent,
   setCredential,
 } from "../lib/agent-storage";
-const RECONNECT_DELAY_MS = 3000,
-  MAX_RECONNECT_DELAY_MS = 60000,
-  RECONNECT_JITTER = 0.15,
-  HEALTH_CHECK_INTERVAL_MS = 30000;
-type ViewerRuntime = { manualDisconnected: boolean; pendingRequest: boolean };
-type AgentRuntime = {
-  socket: WebSocket | null;
-  reconnectTimer: ReturnType<typeof setTimeout> | null;
-  connecting: boolean;
-  manualDisconnected: boolean;
-  reconnectAttempts: number;
-  viewers: Map<string, ViewerRuntime>;
-};
-const newAgentRuntime = (): AgentRuntime => ({
-  socket: null,
-  reconnectTimer: null,
-  connecting: false,
-  manualDisconnected: false,
-  reconnectAttempts: 0,
-  viewers: new Map(),
-});
-const newViewerRuntime = (): ViewerRuntime => ({
-  manualDisconnected: false,
-  pendingRequest: false,
-});
+import {
+  computeReconnectDelay,
+  getRuntime,
+  getViewerRuntime,
+  type AgentRuntime,
+} from "../lib/agent-runtime";
+const HEALTH_CHECK_INTERVAL_MS = 30000;
 export function useAgentConnections() {
   const [agents, setAgents] = useState<AgentConnection[]>([]);
   const [remoteConnections, setRemoteConnections] = useState<
@@ -62,27 +45,6 @@ export function useAgentConnections() {
   const runtimesRef = useRef(new Map<string, AgentRuntime>());
   const agentsRef = useRef<AgentConnection[]>([]);
   const initialLoadRef = useRef(false);
-  function getRuntime(id: string) {
-    let r = runtimesRef.current.get(id);
-    if (!r) {
-      r = newAgentRuntime();
-      runtimesRef.current.set(id, r);
-    }
-    return r;
-  }
-  function getViewer(
-    runtime: AgentRuntime,
-    sessionId: string,
-    monitorIndex: number,
-  ) {
-    const id = viewerId(sessionId, monitorIndex);
-    let v = runtime.viewers.get(id);
-    if (!v) {
-      v = newViewerRuntime();
-      runtime.viewers.set(id, v);
-    }
-    return v;
-  }
   useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
@@ -148,12 +110,12 @@ export function useAgentConnections() {
     setAgents((c) => c.map((a) => (a.id === id ? { ...a, ...patch } : a)));
   }
   function clearReconnectTimer(id: string) {
-    const r = getRuntime(id);
+    const r = getRuntime(runtimesRef.current, id);
     if (r.reconnectTimer) clearTimeout(r.reconnectTimer);
     r.reconnectTimer = null;
   }
   async function disconnectAgentSocket(id: string) {
-    const r = getRuntime(id),
+    const r = getRuntime(runtimesRef.current, id),
       socket = r.socket;
     r.socket = null;
     if (socket)
@@ -163,7 +125,7 @@ export function useAgentConnections() {
   }
   function scheduleReconnect(id: string) {
     const a = agentsRef.current.find((x) => x.id === id),
-      r = getRuntime(id);
+      r = getRuntime(runtimesRef.current, id);
     if (
       !a ||
       !a.remembered ||
@@ -173,12 +135,7 @@ export function useAgentConnections() {
     )
       return;
     updateAgent(id, { status: "Reconnecting…" });
-    const backoff = Math.min(
-      RECONNECT_DELAY_MS * 2 ** r.reconnectAttempts,
-      MAX_RECONNECT_DELAY_MS,
-    );
-    const delay =
-      backoff * (1 - RECONNECT_JITTER + Math.random() * RECONNECT_JITTER * 2);
+    const delay = computeReconnectDelay(r.reconnectAttempts);
     r.reconnectAttempts++;
     r.reconnectTimer = setTimeout(() => {
       r.reconnectTimer = null;
@@ -197,7 +154,7 @@ export function useAgentConnections() {
   }
   async function connectAgent(id: string, isReconnect = false) {
     const agent = agentsRef.current.find((x) => x.id === id),
-      runtime = getRuntime(id);
+      runtime = getRuntime(runtimesRef.current, id);
     if (!agent || runtime.connecting || runtime.socket || !agent.token) return;
     runtime.connecting = true;
     runtime.manualDisconnected = false;
@@ -335,13 +292,13 @@ export function useAgentConnections() {
     return true;
   }
   async function disconnectAgent(id: string) {
-    const r = getRuntime(id);
+    const r = getRuntime(runtimesRef.current, id);
     r.manualDisconnected = true;
     clearReconnectTimer(id);
     for (const v of r.viewers.values()) v.pendingRequest = false;
     setConnectingSessions((c) => {
       const n = new Set(c);
-      for (const key of n) if (key.startsWith(`${id}::`)) n.delete(key);
+      for (const key of n) if (isAgentKey(key, id)) n.delete(key);
       return n;
     });
     setRemoteConnections((c) => c.filter((x) => x.agentId !== id));
@@ -363,8 +320,8 @@ export function useAgentConnections() {
     monitorIndex = 0,
     userInitiated = false,
   ) {
-    const runtime = getRuntime(agentIdValue),
-      viewer = getViewer(runtime, sessionId, monitorIndex),
+    const runtime = getRuntime(runtimesRef.current, agentIdValue),
+      viewer = getViewerRuntime(runtime, sessionId, monitorIndex),
       key = connectionKey(agentIdValue, sessionId, monitorIndex);
     if (userInitiated) viewer.manualDisconnected = false;
     if (
@@ -404,7 +361,7 @@ export function useAgentConnections() {
     const key = connectionKey(agentIdValue, sessionId, monitorIndex),
       runtime = runtimesRef.current.get(agentIdValue);
     if (runtime) {
-      const v = getViewer(runtime, sessionId, monitorIndex);
+      const v = getViewerRuntime(runtime, sessionId, monitorIndex);
       v.manualDisconnected = true;
       v.pendingRequest = false;
     }
