@@ -2,12 +2,14 @@
 [CmdletBinding()]
 param(
     [string]$AgentBinaryPath = ".\msm-agent.exe",
-    [string]$WorkerBinaryPath = ".\msm-agent-worker.exe"
+    [string]$WorkerBinaryPath = ".\msm-agent-worker.exe",
+    [switch]$GenerateCert
 )
 
 $ErrorActionPreference = "Stop"
 $InstallDir = Join-Path $env:ProgramFiles "MSM"
 $DataDir = Join-Path $env:ProgramData "MSM\agent"
+$TlsDir = Join-Path $DataDir "tls"
 $LogDir = Join-Path $DataDir "logs"
 $AgentName = "msm-agent.exe"
 $WorkerName = "msm-agent-worker.exe"
@@ -17,9 +19,14 @@ foreach ($path in @($AgentBinaryPath, $WorkerBinaryPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required binary not found: $path" }
 }
 
-New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $LogDir | Out-Null
+New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $TlsDir, $LogDir | Out-Null
 $InstalledAgent = Join-Path $InstallDir $AgentName
 $InstalledWorker = Join-Path $InstallDir $WorkerName
+
+if ($GenerateCert) {
+    Write-Host "Generating self-signed agent TLS certificate..."
+    & (Join-Path $PSScriptRoot "new-agent-cert.ps1") -OutDir $TlsDir
+}
 
 function Stop-MsmWorkers {
     $workers = @(Get-Process -Name "msm-agent-worker" -ErrorAction SilentlyContinue)
@@ -56,6 +63,33 @@ function Invoke-MsmAgentCommand {
         -WindowStyle Hidden
 
     return $process.ExitCode
+}
+
+function Invoke-MsmAgentCommandCapture {
+    # The agent binary has no console, so its stdout only exists when piped.
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory)]
+        [string[]]$ArgumentList
+    )
+
+    $outFile = Join-Path ([IO.Path]::GetTempPath()) ("msm-agent-out-{0}.log" -f [Guid]::NewGuid())
+    try {
+        $process = Start-Process `
+            -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -Wait `
+            -PassThru `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $outFile
+        $output = if (Test-Path -LiteralPath $outFile) { Get-Content -LiteralPath $outFile -Raw } else { "" }
+        return @{ ExitCode = $process.ExitCode; Output = $output }
+    }
+    finally {
+        Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Stop-MsmServiceAndWait {
@@ -206,7 +240,7 @@ if ($Service.Status -ne "Running") { throw "$ServiceName was installed but faile
 Write-Host "MSM agent installed successfully as $ServiceName"
 Write-Host "Service account: LocalSystem"
 Write-Host "Install directory: $InstallDir"
-Write-Host "Transport: plain WebSocket on local network"
+Write-Host "Transport: TLS (wss) on local network"
 Write-Host "Service recovery: restart on first three failures"
 
 $TokenPath = Join-Path $DataDir "access-token"
@@ -215,11 +249,42 @@ if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) {
     throw "MSM Agent installed successfully, but access token was not created at $TokenPath"
 }
 
-$AccessToken = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
+$AccessToken = $null
+
+# The token file holds the DPAPI-encrypted blob; the usable bearer token
+# comes from --print-identity, which decrypts it.
+$identityResult = Invoke-MsmAgentCommandCapture `
+    -FilePath $InstalledAgent `
+    -ArgumentList @("--print-identity")
+if ($identityResult.ExitCode -ne 0) {
+    throw "Could not read agent access token (--print-identity exit code $($identityResult.ExitCode))."
+}
+$tokenLine = $identityResult.Output -split "`r?`n" |
+    Select-String -Pattern "^access_token=" |
+    Select-Object -First 1
+if ($tokenLine) {
+    $AccessToken = $tokenLine.Line.Split("=", 2)[1].Trim()
+}
 
 if ([string]::IsNullOrWhiteSpace($AccessToken)) {
-    throw "MSM Agent access token file exists but is empty."
+    throw "MSM Agent access token could not be determined."
 }
+
+Write-Host "Verifying agent answers over TLS..."
+[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+try {
+    $health = Invoke-WebRequest `
+        -Uri "https://127.0.0.1:40123/health" `
+        -Headers @{ Authorization = "Bearer $AccessToken" } `
+        -UseBasicParsing -TimeoutSec 10
+}
+catch {
+    throw "Agent TLS health check failed: $($_.Exception.Message)"
+}
+if ($health.StatusCode -ne 200) {
+    throw "Agent TLS health check returned $($health.StatusCode)."
+}
+Write-Host "Health check: TLS + authentication OK."
 
 Write-Host ""
 Write-Host "========================================"
@@ -228,8 +293,8 @@ Write-Host "========================================"
 Write-Host "Service:     $ServiceName"
 Write-Host "Account:     LocalSystem"
 Write-Host "Install:     $InstallDir"
-Write-Host "Transport:   plain WebSocket"
-Write-Host "Endpoint:    ws://<AGENT-IP>:40123/ws"
+Write-Host "Transport:   TLS (wss)"
+Write-Host "Endpoint:    wss://<AGENT-IP>:40123/ws"
 Write-Host ""
 Write-Host "Access token:"
 Write-Host $AccessToken

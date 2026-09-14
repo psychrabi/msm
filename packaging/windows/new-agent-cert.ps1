@@ -66,6 +66,8 @@ $openssl = Find-OpenSsl
     -addext "keyUsage=critical,digitalSignature,keyEncipherment" `
     -addext "extendedKeyUsage=serverAuth"
 if ($LASTEXITCODE -ne 0) { throw "openssl failed with exit code $LASTEXITCODE." }
+$constraints = & $openssl x509 -in $cert -noout -text | Select-String -Pattern "CA:TRUE"
+if ($constraints) { throw "Generated certificate is a CA cert (CA:TRUE); rustls will reject it as a server leaf." }
 
 Write-Host ""
 Write-Host "Wrote:"
