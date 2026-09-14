@@ -14,14 +14,12 @@ type RfbClipboardApi = RFB & {
 export function RemoteViewer({
   remote,
   endpoint,
-  token: _token,
   viewOnly,
   onDisconnect,
   onError,
 }: {
   remote: RemoteConnection;
   endpoint: string;
-  token: string;
   viewOnly: boolean;
   onDisconnect: () => void;
   onError: (message: string) => void;

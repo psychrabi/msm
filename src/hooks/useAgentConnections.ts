@@ -8,6 +8,7 @@ import {
   normalizeAgentIp,
   normalizeEndpoint,
   sessionMonitors,
+  upsertRemoteConnection,
   viewerId,
   type AgentConnection,
   type AgentMessage,
@@ -252,34 +253,13 @@ export function useAgentConnections() {
             const agentNow = agentsRef.current.find((x) => x.id === id),
               session = agentNow?.sessions.find(
                 (x) => x.sessionId === payload.session.sessionId,
-              ),
-              monitor = sessionMonitors(
-                session ?? {
-                  sessionId: payload.session.sessionId,
-                  username: "",
-                  state: "active",
-                },
-              ).find((m) => m.index === mi);
+              );
             setRemoteConnections((c) =>
-              c.some(
-                (x) =>
-                  x.agentId === id &&
-                  x.sessionId === payload.session.sessionId &&
-                  x.monitorIndex === mi,
-              )
-                ? c
-                : [
-                    ...c,
-                    {
-                      ...payload.session,
-                      monitorIndex: mi,
-                      agentId: id,
-                      username:
-                        session?.username ??
-                        `Session ${payload.session.sessionId}`,
-                      monitorName: monitor?.name ?? `Monitor ${mi + 1}`,
-                    },
-                  ],
+              upsertRemoteConnection(c, {
+                agentId: id,
+                payload: payload.session,
+                session,
+              }),
             );
             return;
           }

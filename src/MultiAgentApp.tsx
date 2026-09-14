@@ -15,7 +15,7 @@ import {
 } from "./lib/page-loaders";
 import { AppHeader, type Page } from "./components/AppHeader";
 import type { AgentSidebarActions } from "./components/AgentSidebar";
-import type { MonitoringActions } from "./components/MonitoringPage";
+import type { MonitoringActions } from "./components/SessionViewerCard";
 import "./styles.css";
 const AgentSidebar = lazy(async () => ({
   default: (await import("./components/AgentSidebar")).AgentSidebar,

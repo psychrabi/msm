@@ -150,6 +150,39 @@ export function sessionMonitors(session: Session): MonitorInfo[] {
         },
       ];
 }
+export function upsertRemoteConnection(
+  current: RemoteConnection[],
+  entry: { agentId: string; payload: RemoteSession; session?: Session },
+): RemoteConnection[] {
+  const mi = entry.payload.monitorIndex ?? 0;
+  if (
+    current.some(
+      (x) =>
+        x.agentId === entry.agentId &&
+        x.sessionId === entry.payload.sessionId &&
+        x.monitorIndex === mi,
+    )
+  )
+    return current;
+  const monitor = sessionMonitors(
+    entry.session ?? {
+      sessionId: entry.payload.sessionId,
+      username: "",
+      state: "active",
+    },
+  ).find((m) => m.index === mi);
+  return [
+    ...current,
+    {
+      ...entry.payload,
+      monitorIndex: mi,
+      agentId: entry.agentId,
+      username:
+        entry.session?.username ?? `Session ${entry.payload.sessionId}`,
+      monitorName: monitor?.name ?? `Monitor ${mi + 1}`,
+    },
+  ];
+}
 export function isUnauthorizedError(error: unknown) {
   return /\b401\b|unauthorized|authentication failed|not authorized/i.test(
     error instanceof Error ? error.message : String(error),
