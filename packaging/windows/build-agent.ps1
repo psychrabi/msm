@@ -5,13 +5,20 @@
 
 .DESCRIPTION
   Compiles msm-agent and msm-agent-worker in release mode, stages them
-  alongside the service installer script, and produces a zip that can be
-  copied to any Windows machine. Run the extracted install-agent.ps1 from
-  an elevated PowerShell to install the MSM Agent Windows service.
+  alongside the service installer script, the TLS certificate scripts,
+  and a README, and produces a zip that can be copied to any Windows
+  machine. Run the extracted install-agent.ps1 from an elevated
+  PowerShell to install the MSM Agent Windows service. See README.txt
+  in the package for the full setup order.
 
 .PARAMETER Install
   Additionally run install-agent.ps1 on this machine immediately after
   building (requires an elevated PowerShell).
+
+.PARAMETER GenerateCert
+  Forwarded to install-agent.ps1: generate a fresh self-signed TLS
+  certificate during a local -Install. Only use on first install;
+  regenerating later invalidates already-trusted certificates.
 
 .PARAMETER OutputDir
   Directory that receives the staged folder and zip.
@@ -19,7 +26,8 @@
 [CmdletBinding()]
 param(
     [switch]$Install,
-    [string]$OutputDir
+    [string]$OutputDir,
+    [switch]$GenerateCert
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +67,9 @@ $Artifacts = @{
     (Join-Path $TargetDir "msm-agent.exe")        = "msm-agent.exe"
     (Join-Path $TargetDir "msm-agent-worker.exe") = "msm-agent-worker.exe"
     (Join-Path $PSScriptRoot "install-agent.ps1") = "install-agent.ps1"
+    (Join-Path $PSScriptRoot "new-agent-cert.ps1") = "new-agent-cert.ps1"
+    (Join-Path $PSScriptRoot "install-app-cert.ps1") = "install-app-cert.ps1"
+    (Join-Path $PSScriptRoot "README.txt")        = "README.txt"
 }
 foreach ($source in $Artifacts.Keys) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -79,15 +90,18 @@ Write-Host "  $ZipPath"
 Write-Host "Staged contents:"
 Write-Host "  $StageDir"
 Write-Host ""
-Write-Host "To install on a machine, extract the zip and run install-agent.ps1"
-Write-Host "from an elevated PowerShell."
+Write-Host "To install on a machine, extract the zip and follow README.txt"
+Write-Host "(install-agent.ps1 from an elevated PowerShell)."
 
 if ($Install) {
     Write-Host ""
     Write-Host "Installing on this machine..."
-    & (Join-Path $StageDir "install-agent.ps1") `
-        -AgentBinaryPath (Join-Path $StageDir "msm-agent.exe") `
-        -WorkerBinaryPath (Join-Path $StageDir "msm-agent-worker.exe")
+    $installArgs = @{
+        AgentBinaryPath  = (Join-Path $StageDir "msm-agent.exe")
+        WorkerBinaryPath = (Join-Path $StageDir "msm-agent-worker.exe")
+    }
+    if ($GenerateCert) { $installArgs["GenerateCert"] = $true }
+    & (Join-Path $StageDir "install-agent.ps1") @installArgs
     if ($LASTEXITCODE -ne 0) {
         throw "install-agent.ps1 failed with exit code $LASTEXITCODE"
     }
