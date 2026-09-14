@@ -23,3 +23,5 @@ packaging/windows/dist/
 #.idea/
 node_modules/
 src-tauri/gen/schemas/
+.agents/
+skills-lock.json
