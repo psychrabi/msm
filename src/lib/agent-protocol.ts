@@ -82,13 +82,13 @@ export function normalizeAgentIp(address: string): string {
     const host = value.slice(1, closing);
     const suffix = value.slice(closing + 1);
     return normalizeEndpoint(
-      `ws://[${host}]${suffix || `:${DEFAULT_AGENT_PORT}`}/ws`,
+      `wss://[${host}]${suffix || `:${DEFAULT_AGENT_PORT}`}/ws`,
     );
   }
   if ((value.match(/:/g) ?? []).length > 1)
-    return normalizeEndpoint(`ws://[${value}]:${DEFAULT_AGENT_PORT}/ws`);
-  if (value.includes(":")) return normalizeEndpoint(`ws://${value}/ws`);
-  return normalizeEndpoint(`ws://${value}:${DEFAULT_AGENT_PORT}/ws`);
+    return normalizeEndpoint(`wss://[${value}]:${DEFAULT_AGENT_PORT}/ws`);
+  if (value.includes(":")) return normalizeEndpoint(`wss://${value}/ws`);
+  return normalizeEndpoint(`wss://${value}:${DEFAULT_AGENT_PORT}/ws`);
 }
 export function isValidAgentIp(address: string): boolean {
   const value = address.trim();
